@@ -1,0 +1,417 @@
+{
+  "name": "Ecom Pricing Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "a4625ba4-7c15-46ea-b159-c9cbb57a08ff",
+      "name": "Pricing Engine Cron",
+      "notes": "Periodic inventory reconciliation when webhooks are missed.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "store_id"
+            },
+            {
+              "name": "sku"
+            },
+            {
+              "name": "current_price",
+              "type": "number"
+            },
+            {
+              "name": "cost",
+              "type": "number"
+            },
+            {
+              "name": "correlation_id"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        160
+      ],
+      "id": "f4c9b3b0-4708-4cdf-8b8e-2460188d0f85",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nreturn {\n  store_id: $env.ECOM_DEMO_STORE_ID || '',\n  sku: $env.ECOM_DEMO_PRICING_SKU || 'TEE-BLACK-M',\n  current_price: 89,\n  cost: 35,\n  correlation_id: require('crypto').randomUUID(),\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "53a80287-8e0e-4ff9-9780-e52c57e44d80",
+      "name": "Cron Pricing Seed"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst item = $input.item.json || {};\nreturn {\n  store_id: item.store_id || $env.ECOM_DEMO_STORE_ID || '',\n  sku: item.sku || 'TEE-BLACK-M',\n  current_price: item.current_price == null || item.current_price === '' ? null : Number(item.current_price),\n  cost: item.cost == null || item.cost === '' ? null : Number(item.cost),\n  correlation_id: item.correlation_id || require('crypto').randomUUID(),\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        80
+      ],
+      "id": "a4234449-45cf-4e00-a59e-3505a6bfe873",
+      "name": "Prepare Pricing Body"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/pricing/recommend",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ store_id: $json.store_id, sku: $json.sku, current_price: $json.current_price, cost: $json.cost, correlation_id: $json.correlation_id }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        660,
+        80
+      ],
+      "id": "d7f94367-05d2-40b1-8ff5-85084f7bb6f3",
+      "name": "Sidecar Pricing Recommend",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Writes pricing_recommendations pending row",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Pricing recommend failed';\n\nconst prep = $('Prepare Pricing Body').item.json;\nreturn { ...prep, ok: false, should_alert_slack: false, pricing_error_message: errorMessage };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        260
+      ],
+      "id": "3891769f-40cf-47d0-9097-416eb6e7ff0e",
+      "name": "Handle Pricing HTTP Error"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst prep = $('Prepare Pricing Body').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst recId = body.recommendation_id || '';\nconst sku = body.sku || prep.sku || '';\nconst approveVal = JSON.stringify({ recommendation_id: recId, action: 'approve', sku });\nconst rejectVal = JSON.stringify({ recommendation_id: recId, action: 'reject', sku });\nconst slack_text = `Pricing recommendation for ${sku}: ${body.current_price} → ${body.recommended_price}`;\nconst slack_blocks = {\n  blocks: [\n    { type: 'header', text: { type: 'plain_text', text: 'Pricing recommendation' } },\n    {\n      type: 'section',\n      fields: [\n        { type: 'mrkdwn', text: `*SKU:*\\n${sku}` },\n        { type: 'mrkdwn', text: `*Current → Recommended:*\\n${body.current_price} → ${body.recommended_price}` },\n        { type: 'mrkdwn', text: `*Strategy:*\\n${body.strategy || 'n/a'}` },\n        { type: 'mrkdwn', text: `*Fallback:*\\n${body.fallback_used ? 'yes' : 'no'}` },\n      ],\n    },\n    { type: 'section', text: { type: 'mrkdwn', text: `*Reasoning:*\\n${body.reasoning || 'n/a'}` } },\n    {\n      type: 'actions',\n      elements: [\n        { type: 'button', text: { type: 'plain_text', text: 'Approve' }, style: 'primary', action_id: 'approve_pricing', value: approveVal },\n        { type: 'button', text: { type: 'plain_text', text: 'Reject' }, style: 'danger', action_id: 'reject_pricing', value: rejectVal },\n      ],\n    },\n  ],\n};\nreturn {\n  ...prep,\n  ...body,\n  slack_text,\n  slack_blocks,\n  should_alert_slack: body.should_alert_slack !== false,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        80
+      ],
+      "id": "1c5fb7d6-8a82-413d-aabb-43a9b72c653b",
+      "name": "Flatten Pricing Result"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c78d281a-c9df-4f7b-8382-2f0dc09bd3db",
+              "leftValue": "={{ $json.should_alert_slack }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        80
+      ],
+      "id": "dacb07ac-a330-4026-8804-086c22b8e909",
+      "name": "Should Slack Pricing?"
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_ECOM_CHANNEL_ID || 'SLACK_ECOM_CHANNEL_ID' }}"
+        },
+        "messageType": "block",
+        "blocksUi": "={{ JSON.stringify($json.slack_blocks) }}",
+        "text": "={{ $json.slack_text }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        0
+      ],
+      "id": "d3626c7c-1852-4b66-8e39-aa5fdad32859",
+      "name": "Slack Pricing Approval",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_BOT_CREDENTIAL_ID",
+          "name": "Slack ecom bot"
+        }
+      },
+      "notes": "Bind Slack API credential with Bot User OAuth Token (xoxb-). OAuth2 posts as you.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Slack pricing approval post failed';\n\nconst prep = $('Flatten Pricing Result').first()?.json || {};\nreturn { ...prep, ok: false, slack_error_message: errorMessage, _metadata: { processing_stage: 'pricing_slack_error', severity: 'medium', error_message: errorMessage } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        200
+      ],
+      "id": "fbcddf33-a83a-4ced-92d9-9e42dd24f989",
+      "name": "Log Slack Pricing Error"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        320
+      ],
+      "id": "fde829da-d3fa-46a1-a7aa-f2f7ac58dc35",
+      "name": "No Pricing Slack"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1540,
+        80
+      ],
+      "id": "c8116147-6a1d-4452-a562-c294ca5dee62",
+      "name": "Pricing Done"
+    }
+  ],
+  "connections": {
+    "Pricing Engine Cron": {
+      "main": [
+        [
+          {
+            "node": "Cron Pricing Seed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron Pricing Seed": {
+      "main": [
+        [
+          {
+            "node": "Prepare Pricing Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Prepare Pricing Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Pricing Body": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Pricing Recommend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Pricing Recommend": {
+      "main": [
+        [
+          {
+            "node": "Flatten Pricing Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Pricing HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Pricing HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Flatten Pricing Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Pricing Result": {
+      "main": [
+        [
+          {
+            "node": "Should Slack Pricing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Slack Pricing?": {
+      "main": [
+        [
+          {
+            "node": "Slack Pricing Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Pricing Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Pricing Approval": {
+      "main": [
+        [
+          {
+            "node": "Pricing Done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Slack Pricing Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Slack Pricing Error": {
+      "main": [
+        [
+          {
+            "node": "Pricing Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Pricing Slack": {
+      "main": [
+        [
+          {
+            "node": "Pricing Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Ecom Error Handler"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

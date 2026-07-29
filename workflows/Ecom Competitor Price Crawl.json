@@ -1,0 +1,309 @@
+{
+  "name": "Ecom Competitor Price Crawl",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "c6ca8cfa-82b3-4ced-9ee7-c4d3a2c51285",
+      "name": "Competitor Crawl Cron",
+      "notes": "Periodic inventory reconciliation when webhooks are missed.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "url": "http://ecom_python_ai:8001/competitors/targets",
+        "options": {
+          "timeout": 20000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        220,
+        0
+      ],
+      "id": "93849e40-cef6-4831-bd73-2a6b6a56bfda",
+      "name": "Load Competitor Targets",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Fetch competitor page HTML (whitelist URL only).",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Load competitor targets failed';\n\nreturn { ok: false, targets_error_message: errorMessage, _metadata: { processing_stage: 'competitor_targets_error', severity: 'medium', error_message: errorMessage } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        160
+      ],
+      "id": "ed94ec6a-031b-4215-b121-3a0d470804d3",
+      "name": "Handle Targets HTTP Error"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst targets = Array.isArray(body.targets) ? body.targets : [];\nconst store_id = body.store_id || $env.ECOM_DEMO_STORE_ID || '';\nconst defaultSku = body.sku || 'TEE-BLACK-M';\nif (!targets.length) {\n  return [{\n    json: {\n      store_id,\n      url: 'https://example.com/products/tee-black-m',\n      sku: defaultSku,\n      source_name: 'example-comp',\n      correlation_id: require('crypto').randomUUID(),\n      demo_html: '<html><body><h1>Demo Tee</h1><p>Price: $84.00</p></body></html>',\n    },\n  }];\n}\nreturn targets.map((t) => ({\n  json: {\n    store_id,\n    url: t.url || t,\n    sku: t.sku || defaultSku,\n    source_name: t.source_name || 'competitor',\n    correlation_id: require('crypto').randomUUID(),\n    demo_html: '',\n  },\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "a15f221e-c5af-4667-b7d1-878da6d3a2f9",
+      "name": "Expand Targets"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": 20000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        660,
+        0
+      ],
+      "id": "2429b63b-7e6b-4a9a-ac68-d2b478a63c35",
+      "name": "Fetch Competitor Page",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Fetch competitor page HTML (whitelist URL only).",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\n// HTTP Fetch replaces item json with response body — restore context from Expand Targets.\nconst item = $input.item.json || {};\nlet ctx = {};\ntry { ctx = $('Expand Targets').item.json || {}; } catch (_) { ctx = {}; }\n\nconst store_id = item.store_id || ctx.store_id || $env.ECOM_DEMO_STORE_ID || '';\nconst url = item.url || ctx.url || 'https://example.com/products/tee-black-m';\nconst sku = item.sku || ctx.sku || 'TEE-BLACK-M';\nconst source_name = item.source_name || ctx.source_name || 'competitor';\nconst correlation_id = item.correlation_id || ctx.correlation_id || require('crypto').randomUUID();\nconst demo_html = item.demo_html || ctx.demo_html || '<html><body><h1>Demo Tee</h1><p>Price: $84.00</p></body></html>';\n\nlet raw = '';\nif (typeof item === 'string') {\n  raw = item;\n} else if (typeof item.data === 'string') {\n  raw = item.data;\n} else if (typeof item.body === 'string') {\n  raw = item.body;\n} else if (item.data != null || item.body != null) {\n  const fetched = item.data || item.body;\n  raw = typeof fetched === 'string' ? fetched : JSON.stringify(fetched);\n} else if (item.raw_content) {\n  raw = String(item.raw_content);\n} else {\n  // Plain HTML response often lands as a single-field object or stray keys — stringify whole item as last resort only if it looks like HTML.\n  const asText = typeof item === 'object' ? (item.html || item.content || '') : '';\n  raw = asText || '';\n  if (!raw && Object.keys(item).length === 1) {\n    const only = item[Object.keys(item)[0]];\n    if (typeof only === 'string') raw = only;\n  }\n  // n8n sometimes puts the entire HTML string as the json value via weird shapes — detect doctype\n  if (!raw) {\n    const blob = JSON.stringify(item);\n    if (blob.includes('<html') || blob.includes('<!doctype')) {\n      // Prefer extracting from known string fields first; if item IS effectively the HTML document fields\n      raw = Object.values(item).find((v) => typeof v === 'string' && v.includes('<')) || '';\n    }\n  }\n}\n\nraw = String(raw || '');\n// Example Domain / empty pages have no price — use seeded demo HTML for reliable demos.\nconst hasPrice = /\\$\\s*\\d|price[\\s:=]/i.test(raw);\nif (!hasPrice || raw.length < 20) {\n  raw = demo_html;\n}\n\nif (!store_id) {\n  throw new Error('store_id missing — set ECOM_DEMO_STORE_ID in n8n env or ensure /competitors/targets returns store_id');\n}\n\nreturn {\n  store_id,\n  url,\n  sku,\n  source_name,\n  raw_content: raw.slice(0, 8000),\n  correlation_id,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "f00c65d5-98e1-4858-879e-2d0ab96f6595",
+      "name": "Prepare Parse Body"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/competitors/parse",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ store_id: $json.store_id, url: $json.url, raw_content: $json.raw_content, sku: $json.sku, source_name: $json.source_name, correlation_id: $json.correlation_id }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1100,
+        0
+      ],
+      "id": "490c9865-d06d-4e81-891f-712b442b8b6f",
+      "name": "Sidecar Competitor Parse",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "LLM/regex parse → price_snapshots",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Competitor crawl/parse failed';\n\nreturn { ok: false, crawl_error_message: errorMessage };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        200
+      ],
+      "id": "fc2523fd-96cc-478e-beab-22338653a142",
+      "name": "Handle Crawl HTTP Error"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        0
+      ],
+      "id": "ba9e6b62-4e73-4828-9264-ffa49d1b896c",
+      "name": "Crawl Done"
+    }
+  ],
+  "connections": {
+    "Competitor Crawl Cron": {
+      "main": [
+        [
+          {
+            "node": "Load Competitor Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Competitor Targets": {
+      "main": [
+        [
+          {
+            "node": "Expand Targets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Targets HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Targets HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Crawl Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Targets": {
+      "main": [
+        [
+          {
+            "node": "Fetch Competitor Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Competitor Page": {
+      "main": [
+        [
+          {
+            "node": "Prepare Parse Body",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Parse Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Parse Body": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Competitor Parse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Competitor Parse": {
+      "main": [
+        [
+          {
+            "node": "Crawl Done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Crawl HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Crawl HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Crawl Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Ecom Error Handler"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

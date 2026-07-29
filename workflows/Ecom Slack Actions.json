@@ -1,0 +1,701 @@
+{
+  "name": "Ecom Slack Actions",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "ecom-slack-interactions",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "8f1ec2f6-e187-41d6-9f70-ea11e293c95b",
+      "name": "Slack Interactivity",
+      "webhookId": "0aad31c6-8b0e-4bf0-8083-f5710900ead1",
+      "notes": "Shopify webhook ingress; rawBody required for HMAC verification.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst crypto = require('crypto');\n\nconst item = $input.item;\nconst json = item.json || {};\nconst headers = json.headers || {};\nconst body = json.body ?? json;\nconst signingSecret = ($env.SLACK_SIGNING_SECRET || '').trim();\nconst skipTimestampCheck = String($env.SLACK_SKIP_TIMESTAMP_CHECK || '').toLowerCase() === 'true';\nconst maxAgeSeconds = parseInt($env.SLACK_SIGNATURE_MAX_AGE_SECONDS || '300', 10);\n\nconst signatureHeader =\n  headers['x-slack-signature'] || headers['X-Slack-Signature'] || '';\nconst timestampHeader =\n  headers['x-slack-request-timestamp'] || headers['X-Slack-Request-Timestamp'] || '';\n\nfunction readRawBody() {\n  if (json.rawBody) return { rawBody: json.rawBody, raw_body_source: 'json.rawBody' };\n\n  const binary = item.binary?.data;\n  if (binary?.data) {\n    return {\n      rawBody: Buffer.from(binary.data, binary.encoding || 'base64').toString('utf8'),\n      raw_body_source: 'binary.data',\n    };\n  }\n\n  if (typeof body === 'string') {\n    return { rawBody: body, raw_body_source: 'body_string' };\n  }\n\n  // Slack interactivity is application/x-www-form-urlencoded: payload=<json>\n  if (body && body.payload != null) {\n    return {\n      rawBody:\n        'payload=' +\n        encodeURIComponent(\n          typeof body.payload === 'string' ? body.payload : JSON.stringify(body.payload),\n        ),\n      raw_body_source: 'payload_reencoded',\n    };\n  }\n\n  return { rawBody: JSON.stringify(body || {}), raw_body_source: 'json_stringified' };\n}\n\nfunction computeSignature(secret, timestamp, payload) {\n  return 'v0=' + crypto.createHmac('sha256', secret).update(`v0:${timestamp}:${payload}`).digest('hex');\n}\n\nfunction signaturesMatch(signature, expected) {\n  try {\n    return (\n      signature.length === expected.length &&\n      crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))\n    );\n  } catch {\n    return false;\n  }\n}\n\nconst { rawBody, raw_body_source } = readRawBody();\nlet signature_valid = true;\nlet verify_reason = 'verification_skipped';\nlet age_seconds = null;\n\nif (!signingSecret) {\n  signature_valid = true;\n  verify_reason = 'verification_skipped';\n} else if (!signatureHeader || !timestampHeader) {\n  signature_valid = false;\n  verify_reason = 'missing_signature';\n} else {\n  const requestTs = parseInt(timestampHeader, 10);\n  const now = Math.floor(Date.now() / 1000);\n  age_seconds = Number.isFinite(requestTs) ? Math.abs(now - requestTs) : null;\n  const timestampFresh =\n    skipTimestampCheck ||\n    (Number.isFinite(requestTs) && age_seconds <= (Number.isFinite(maxAgeSeconds) ? maxAgeSeconds : 300));\n  const expected = computeSignature(signingSecret, timestampHeader, rawBody);\n  const signatureMatch = signaturesMatch(signatureHeader, expected);\n  if (!timestampFresh) {\n    signature_valid = false;\n    verify_reason = signatureMatch ? 'timestamp_expired' : 'timestamp_expired_invalid_signature';\n  } else {\n    signature_valid = signatureMatch;\n    verify_reason = signatureMatch ? 'ok' : 'invalid_signature';\n  }\n}\n\nreturn {\n  ...json,\n  headers,\n  body,\n  rawBody,\n  raw_body_source,\n  signature_valid,\n  verify_reason,\n  age_seconds,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "c535b52d-5d48-411e-8bd8-154b2f26d59d",
+      "name": "Verify Slack Signature"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4f2bbbaf-45dd-497a-a61d-6b0ba0f38466",
+              "leftValue": "={{ $json.signature_valid }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "1678422c-4624-4542-a19b-582e2da0b861",
+      "name": "Signature OK?"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": false, \"error\": \"invalid_signature\" } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        -160
+      ],
+      "id": "d3888772-6074-47d3-a484-dc7105508c3d",
+      "name": "Respond 401"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        0
+      ],
+      "id": "9588e0a5-09bd-4a20-91b7-784400950541",
+      "name": "Ack Slack"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst item = $input.item.json || {};\nconst body = item.body || {};\nlet payload = {};\ntry {\n  if (body.payload) {\n    payload = typeof body.payload === 'string' ? JSON.parse(body.payload) : body.payload;\n  } else {\n    const raw = item.rawBody || '';\n    const params = new URLSearchParams(\n      String(raw).includes('payload=') ? String(raw) : `payload=${raw}`,\n    );\n    const p = params.get('payload') || '';\n    payload = p ? JSON.parse(p) : {};\n  }\n} catch (e) {\n  payload = {};\n}\nconst action = (payload.actions && payload.actions[0]) || {};\nlet value = {};\ntry { value = JSON.parse(action.value || '{}'); } catch { value = {}; }\nconst admins = String($env.SLACK_ADMIN_USERS || '').split(',').map(s => s.trim()).filter(Boolean);\nconst userId = payload.user?.id || '';\nconst authorized = admins.length === 0 || admins.includes(userId);\nreturn {\n  signature_valid: item.signature_valid !== false,\n  authorized,\n  action_id: action.action_id || '',\n  recommendation_id: value.recommendation_id || '',\n  sku: value.sku || '',\n  action: value.action || (String(action.action_id || '').includes('reject') ? 'reject' : 'approve'),\n  actor: payload.user?.username || payload.user?.name || userId,\n  channel_id: payload.channel?.id || '',\n  message_ts: payload.message?.ts || payload.container?.message_ts || '',\n  response_url: payload.response_url || '',\n  correlation_id: require('crypto').randomUUID(),\n  verify_reason: item.verify_reason || '',\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "9c9efad3-0738-436a-9c00-46d53fad2f0e",
+      "name": "Parse Slack Action"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "06214c87-9e6d-4b6b-a8a6-edd2ca9451f1",
+              "leftValue": "={{ $json.authorized }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        0
+      ],
+      "id": "b0ed4db1-a8d9-4b1e-8b73-22b9a4a35909",
+      "name": "Authorized Admin?"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst prep = $input.item.json || {};\nconst slack_text = `Unauthorized pricing action by ${prep.actor || 'unknown'}`;\nconst blocks = [\n  { type: 'section', text: { type: 'mrkdwn', text: `*Unauthorized*\\nYou are not in SLACK_ADMIN_USERS.\\nActor: ${prep.actor || 'n/a'}` } },\n];\nreturn {\n  ...prep,\n  slack_text,\n  slack_response_body: { replace_original: true, text: slack_text, blocks },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        -160
+      ],
+      "id": "f9695c7b-eff8-4221-97a1-6e72b27b992b",
+      "name": "Unauthorized Reply"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/pricing/action",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ recommendation_id: $json.recommendation_id, action: $json.action, actor: $json.actor, correlation_id: $json.correlation_id }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1320,
+        0
+      ],
+      "id": "3f5fffc1-4a78-483a-b976-5f77e23933ca",
+      "name": "Sidecar Pricing Action",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Approve/reject → PG status; writeback gated",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Sidecar pricing action failed';\n\nconst prep = $('Parse Slack Action').first()?.json || {};\nconst slack_text = `Pricing ${prep.action || 'action'} failed for ${prep.sku || prep.recommendation_id || 'n/a'}: ${errorMessage}`;\nconst blocks = [\n  {\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*Pricing action failed*\\nSKU: ${prep.sku || 'n/a'}\\nAction: ${prep.action || 'n/a'}\\nError: ${errorMessage}\\nBy: ${prep.actor || 'n/a'}`,\n    },\n  },\n];\nreturn {\n  ...prep,\n  ok: false,\n  stage: 'sidecar_pricing_action_failed',\n  error_message: errorMessage,\n  slack_text,\n  slack_response_body: { replace_original: true, text: slack_text, blocks },\n  _metadata: {\n    processing_stage: 'slack_action_sidecar_error',\n    severity: 'high',\n    error_message: errorMessage,\n    correlation_id: prep.correlation_id || '',\n  },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        200
+      ],
+      "id": "4b4f6d42-d7e7-475f-8eba-db0eb0588f87",
+      "name": "Handle Sidecar Action Error",
+      "notes": "Business failed after Ack — tell user via response_url",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst prep = $('Parse Slack Action').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst status = body.status || 'unknown';\nconst sku = body.sku || prep.sku || 'n/a';\nconst wb = body.writeback_status || 'n/a';\nconst idem = body.idempotent === true;\nconst note = body.message\n  ? `\\nNote: ${body.message}`\n  : (idem ? '\\nNote: already decided (same recommendation reused)' : '');\nconst title = idem ? `Pricing ${prep.action} (idempotent)` : `Pricing ${prep.action}`;\nconst slack_text = `${title}: ${sku} → ${status} (writeback=${wb})`;\nconst blocks = [\n  {\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*${title}*\\nSKU: ${sku}\\nStatus: *${status}*\\nWriteback: ${wb}\\nBy: ${prep.actor || 'n/a'}${note}`,\n    },\n  },\n];\n// Prefer response_url (hooks.slack.com) over chat.update — avoids OAuth/proxy flakes on Update.\nconst slack_response_body = {\n  replace_original: true,\n  text: slack_text,\n  blocks,\n};\nreturn {\n  ...prep,\n  ...body,\n  sku,\n  slack_text,\n  slack_blocks: { blocks },\n  slack_response_body,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        0
+      ],
+      "id": "35c00601-cb37-40b4-baaa-c81c9406ba6d",
+      "name": "Flatten Pricing Action"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.response_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.slack_response_body }}",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1760,
+        0
+      ],
+      "id": "4250ce8b-5d75-4ad1-9267-d79e7564793b",
+      "name": "Post Slack response_url",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "replace_original via interaction response_url",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.response_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.slack_response_body }}",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1760,
+        200
+      ],
+      "id": "ea695bb1-35ad-4f0c-874f-4c2bf5bd5b8d",
+      "name": "Post Failure response_url",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Card error state when sidecar fails",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.response_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.slack_response_body }}",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1540,
+        -160
+      ],
+      "id": "7fcb4dc5-2db6-40a9-9fbd-54f3c69c3fde",
+      "name": "Post Unauthorized response_url",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Slack response_url update failed';\n\nlet ctx = {};\ntry { ctx = $('Flatten Pricing Action').first()?.json || {}; } catch (_) {}\nif (!ctx.response_url) {\n  try { ctx = { ...($('Parse Slack Action').first()?.json || {}), ...ctx }; } catch (_) {}\n}\nconst sku = ctx.sku || 'n/a';\nconst status = ctx.status || 'unknown';\nconst slack_text =\n  `Pricing update for ${sku} may have applied (status=${status}), but Slack card refresh failed: ${errorMessage}`;\nreturn {\n  ...ctx,\n  ok: false,\n  stage: 'slack_notify_failed',\n  notify_error_message: errorMessage,\n  slack_text,\n  _metadata: {\n    processing_stage: 'slack_action_notify_error',\n    severity: 'medium',\n    error_message: errorMessage,\n    correlation_id: ctx.correlation_id || '',\n  },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        80
+      ],
+      "id": "9e1e596a-60c2-4083-b585-2aec50035448",
+      "name": "Handle Notify Fail",
+      "notes": "Business may have succeeded; card refresh failed → channel fallback",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Failure response_url post failed';\n\nconst prep = $('Handle Sidecar Action Error').first()?.json || $('Parse Slack Action').first()?.json || {};\nreturn {\n  ...prep,\n  ok: false,\n  stage: 'failure_notify_failed',\n  notify_error_message: errorMessage,\n  slack_text: prep.slack_text || `Pricing action failed: ${prep.error_message || errorMessage}`,\n  _metadata: {\n    processing_stage: 'slack_action_failure_notify_error',\n    severity: 'high',\n    error_message: errorMessage,\n    correlation_id: prep.correlation_id || '',\n  },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        200
+      ],
+      "id": "e1f86179-6904-4ff0-bec7-c98b64566c0e",
+      "name": "Handle Failure Notify Fail",
+      "notes": "Sidecar failed AND response_url failed → channel fallback",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Unauthorized Slack response_url failed';\n\nconst prep = $('Unauthorized Reply').first()?.json || $('Parse Slack Action').first()?.json || {};\nreturn {\n  ...prep,\n  ok: false,\n  stage: 'unauthorized_notify_failed',\n  notify_error_message: errorMessage,\n  _metadata: {\n    processing_stage: 'slack_action_unauthorized_notify_error',\n    severity: 'low',\n    error_message: errorMessage,\n    correlation_id: prep.correlation_id || '',\n  },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        -160
+      ],
+      "id": "b8e2675f-8f69-4b58-9a8f-d2c472f19470",
+      "name": "Handle Unauthorized Notify Fail"
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_ECOM_CHANNEL_ID || 'SLACK_ECOM_CHANNEL_ID' }}"
+        },
+        "text": "={{ $json.slack_text }}"
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        80
+      ],
+      "id": "9214b3a6-18f1-47a5-bf95-76ce361972ec",
+      "name": "Slack Fallback Notify",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_BOT_CREDENTIAL_ID",
+          "name": "Slack ecom bot"
+        }
+      },
+      "notes": "Bind Slack API Access Token = Bot User OAuth Token (xoxb-). Do not use OAuth2.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_ECOM_CHANNEL_ID || 'SLACK_ECOM_CHANNEL_ID' }}"
+        },
+        "text": "={{ $json.slack_text }}"
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        200
+      ],
+      "id": "e136d18f-800a-4542-ae26-85f81bf778cf",
+      "name": "Slack Fallback Failure",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_BOT_CREDENTIAL_ID",
+          "name": "Slack ecom bot"
+        }
+      },
+      "notes": "Bind Slack API Access Token = Bot User OAuth Token (xoxb-). Do not use OAuth2.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2420,
+        0
+      ],
+      "id": "cba74844-8f75-4adc-a53a-e8ac97fb5717",
+      "name": "Slack Actions End"
+    }
+  ],
+  "connections": {
+    "Slack Interactivity": {
+      "main": [
+        [
+          {
+            "node": "Verify Slack Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Slack Signature": {
+      "main": [
+        [
+          {
+            "node": "Signature OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature OK?": {
+      "main": [
+        [
+          {
+            "node": "Ack Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ack Slack": {
+      "main": [
+        [
+          {
+            "node": "Parse Slack Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Slack Action": {
+      "main": [
+        [
+          {
+            "node": "Authorized Admin?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorized Admin?": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Pricing Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unauthorized Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Pricing Action": {
+      "main": [
+        [
+          {
+            "node": "Flatten Pricing Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Sidecar Action Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Pricing Action": {
+      "main": [
+        [
+          {
+            "node": "Post Slack response_url",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Slack response_url": {
+      "main": [
+        [
+          {
+            "node": "Slack Actions End",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Notify Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Notify Fail": {
+      "main": [
+        [
+          {
+            "node": "Slack Fallback Notify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Fallback Notify": {
+      "main": [
+        [
+          {
+            "node": "Slack Actions End",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Actions End",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Sidecar Action Error": {
+      "main": [
+        [
+          {
+            "node": "Post Failure response_url",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Failure response_url": {
+      "main": [
+        [
+          {
+            "node": "Slack Actions End",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Failure Notify Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Failure Notify Fail": {
+      "main": [
+        [
+          {
+            "node": "Slack Fallback Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Fallback Failure": {
+      "main": [
+        [
+          {
+            "node": "Slack Actions End",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Actions End",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unauthorized Reply": {
+      "main": [
+        [
+          {
+            "node": "Post Unauthorized response_url",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Unauthorized response_url": {
+      "main": [
+        [
+          {
+            "node": "Slack Actions End",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Unauthorized Notify Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Unauthorized Notify Fail": {
+      "main": [
+        [
+          {
+            "node": "Slack Actions End",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Ecom Error Handler"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

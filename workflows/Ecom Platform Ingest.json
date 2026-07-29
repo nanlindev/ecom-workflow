@@ -1,0 +1,570 @@
+{
+  "name": "Ecom Platform Ingest",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "ecom-shopify",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "67f88a82-8d0a-4bb9-b579-b48e6947830e",
+      "name": "Shopify Webhook",
+      "webhookId": "932dde40-d4d0-4a36-b654-b42e90f83dee",
+      "notes": "Shopify webhook ingress; rawBody required for HMAC verification.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst crypto = require('crypto');\nconst item = $input.item.json || {};\nconst headers = item.headers || {};\nconst rawBody =\n  item.rawBody ||\n  (typeof item.body === 'string' ? item.body : JSON.stringify(item.body ?? item));\n\nconst correlation_id =\n  headers['x-correlation-id'] ||\n  headers['X-Correlation-Id'] ||\n  crypto.randomUUID();\n\nconst store_key =\n  $env.ECOM_DEMO_STORE_KEY ||\n  (headers['x-shopify-shop-domain'] || '').replace('.myshopify.com', '') ||\n  'demo-shopify';\n\nreturn {\n  correlation_id,\n  store_key,\n  raw_body: rawBody,\n  headers,\n  skip_verify: false,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "4f93eef7-d805-4b7f-a45d-44918614576a",
+      "name": "Prepare Ingest Request",
+      "notes": "Assign correlation_id early; forward raw body + headers for HMAC.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/ingest/shopify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ raw_body: $json.raw_body, headers: $json.headers, store_key: $json.store_key, correlation_id: $json.correlation_id, skip_verify: $json.skip_verify }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        440,
+        0
+      ],
+      "id": "1ecbdcd6-fe61-44f0-8399-b07fe4f487ac",
+      "name": "Sidecar Ingest Shopify",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Verify HMAC → normalize → idempotent PG upsert.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Ingest sidecar call failed';\n\nconst prep = $('Prepare Ingest Request').item.json;\nreturn {\n  ...prep,\n  ok: false,\n  signature_valid: false,\n  ingest_error_message: errorMessage,\n  http_status: 502,\n  dispatch: { inventory: false, order: false, returns: false },\n  _metadata: { processing_stage: 'ingest_http_failed', severity: 'high' },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ],
+      "id": "ac725615-c9c8-4a01-9806-85ef5d9a80c2",
+      "name": "Handle Ingest HTTP Error"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst prep = $('Prepare Ingest Request').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst eventType = body.event_type || '';\nconst primary = body.entities?.primary_id || '';\nreturn {\n  ...prep,\n  ...body,\n  correlation_id: body.correlation_id || prep.correlation_id,\n  signature_valid: body.signature_valid !== false && body.ok !== false,\n  dispatch: body.dispatch || { inventory: false, order: false, returns: false },\n  sku: body.entities?.sku || '',\n  order_id: eventType === 'order' ? primary : '',\n  return_id: eventType === 'return' ? primary : '',\n  external_order_id: body.entities?.external_order_id || '',\n  external_return_id: body.entities?.external_return_id || '',\n  amount: body.entities?.amount ?? null,\n  days_since_order: Number(body.days_since_order ?? 0),\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "id": "bc3e7cd3-4259-4962-ad54-94fb95c41075",
+      "name": "Normalize Ingest Result"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "78dfbbcc-a96a-40bb-af50-7961a348beb8",
+              "leftValue": "={{ $json.signature_valid }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "909b0b54-d97b-42cb-8219-db581664f5b5",
+      "name": "Signature Valid?"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": false, \"error\": \"invalid_signature\" } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        -160
+      ],
+      "id": "881e0a50-addb-40f6-9e42-c06305fe8552",
+      "name": "Respond 401"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true, \"correlation_id\": $json.correlation_id, \"event_type\": $json.event_type } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        0
+      ],
+      "id": "99c3750b-5805-4f65-873a-824c61be4fa4",
+      "name": "Respond 200"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "13581dac-d48d-4dd4-9b35-8142e0c7ba10",
+              "leftValue": "={{ $json.dispatch.inventory }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        0
+      ],
+      "id": "0c6784db-16b2-457a-ae4d-18cd512ac1cc",
+      "name": "Dispatch Inventory?"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ecom Inventory Sync"
+        },
+        "options": {},
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "store_id": "={{ $json.store_id }}",
+            "store_key": "={{ $json.store_key || '' }}",
+            "sku": "={{ $json.sku || $json.entities?.sku || '' }}",
+            "correlation_id": "={{ $json.correlation_id }}",
+            "slave_levels": "={{ JSON.stringify($json.slave_levels || []) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": true,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1540,
+        -80
+      ],
+      "id": "b0c8aabf-9080-4759-82aa-24365c053310",
+      "name": "Execute Inventory Sync",
+      "notes": "Explicit workflowInputs → Ecom Inventory Sync. Re-select target after import if needed.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5469dba2-05d7-4a27-93e2-34b6e00e0f06",
+              "leftValue": "={{ $json.dispatch.order }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        160
+      ],
+      "id": "d266a110-2083-44bd-88c5-3b68333bdc1b",
+      "name": "Dispatch Order?"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ecom Order Tracker"
+        },
+        "options": {},
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "store_id": "={{ $json.store_id }}",
+            "order_id": "={{ $json.order_id || $json.entities?.primary_id || '' }}",
+            "external_order_id": "={{ $json.external_order_id || $json.entities?.external_order_id || '' }}",
+            "new_status": "={{ $json.new_status || '' }}",
+            "correlation_id": "={{ $json.correlation_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": true,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1540,
+        160
+      ],
+      "id": "5b340ab3-2d57-47bb-8e14-bd3fcb1dda02",
+      "name": "Execute Order Tracker",
+      "notes": "Explicit workflowInputs → Ecom Order Tracker. Re-select target after import if needed.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "568f7685-e8a0-4838-8663-4d8eae2d4b81",
+              "leftValue": "={{ $json.dispatch.returns }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        320
+      ],
+      "id": "d7da1a03-5a22-4ae0-936f-4265e7d2505d",
+      "name": "Dispatch Returns?"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ecom Returns Automation"
+        },
+        "options": {},
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "store_id": "={{ $json.store_id }}",
+            "return_id": "={{ $json.return_id || $json.entities?.primary_id || '' }}",
+            "external_return_id": "={{ $json.external_return_id || $json.entities?.external_return_id || '' }}",
+            "order_id": "={{ '' }}",
+            "amount": "={{ Number($json.amount ?? $json.entities?.amount ?? 0) }}",
+            "days_since_order": "={{ Number($json.days_since_order ?? 0) }}",
+            "reason": "={{ $json.reason || $json.entities?.reason || '' }}",
+            "correlation_id": "={{ $json.correlation_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": true,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1540,
+        320
+      ],
+      "id": "d3ae6efa-0e16-41e0-b8c1-44a533e46a85",
+      "name": "Execute Returns Automation",
+      "notes": "Explicit workflowInputs → Ecom Returns Automation. Re-select target after import if needed.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1540,
+        480
+      ],
+      "id": "f426be58-cd21-4581-a467-58ef56714a00",
+      "name": "No Downstream"
+    }
+  ],
+  "connections": {
+    "Shopify Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Ingest Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Ingest Request": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Ingest Shopify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Ingest Shopify": {
+      "main": [
+        [
+          {
+            "node": "Normalize Ingest Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Ingest HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Ingest HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Normalize Ingest Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Ingest Result": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 200": {
+      "main": [
+        [
+          {
+            "node": "Dispatch Inventory?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch Inventory?": {
+      "main": [
+        [
+          {
+            "node": "Execute Inventory Sync",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dispatch Order?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Inventory Sync": {
+      "main": [
+        [
+          {
+            "node": "Dispatch Order?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch Order?": {
+      "main": [
+        [
+          {
+            "node": "Execute Order Tracker",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dispatch Returns?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Order Tracker": {
+      "main": [
+        [
+          {
+            "node": "Dispatch Returns?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch Returns?": {
+      "main": [
+        [
+          {
+            "node": "Execute Returns Automation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Downstream",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Ecom Error Handler"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

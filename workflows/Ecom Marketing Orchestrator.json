@@ -1,0 +1,566 @@
+{
+  "name": "Ecom Marketing Orchestrator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "8bb4fbfe-cf92-4e7a-9059-1479844a5636",
+      "name": "Marketing Advance Cron",
+      "notes": "Periodic inventory reconciliation when webhooks are missed.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "store_id"
+            },
+            {
+              "name": "email"
+            },
+            {
+              "name": "campaign_key"
+            },
+            {
+              "name": "campaign_type"
+            },
+            {
+              "name": "correlation_id"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        180
+      ],
+      "id": "71699061-1ec9-4a27-aac8-24c1522206a8",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst item = $input.item.json || {};\nconst hasEmail = !!(item.email && String(item.email).trim());\nreturn {\n  ...item,\n  store_id: item.store_id || $env.ECOM_DEMO_STORE_ID || '',\n  campaign_key: item.campaign_key || 'abandon_cart_default',\n  campaign_type: item.campaign_type || 'abandon_cart',\n  correlation_id: item.correlation_id || require('crypto').randomUUID(),\n  do_enroll: hasEmail,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        180
+      ],
+      "id": "832f43b1-6285-43ec-8196-83bf0a105a6c",
+      "name": "Route Enroll Or Advance"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nreturn {\n  store_id: $env.ECOM_DEMO_STORE_ID || null,\n  limit: 20,\n  correlation_id: require('crypto').randomUUID(),\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "55b426b0-3d23-44f9-94b9-3bb81fc1c832",
+      "name": "Cron Advance Seed"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "83262a62-c79a-4eff-bbb5-6fe03f835ca0",
+              "leftValue": "={{ $json.do_enroll }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        180
+      ],
+      "id": "c699339a-d633-4956-9103-9657c6012e8a",
+      "name": "Do Enroll?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/marketing/enroll",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ store_id: $json.store_id, email: $json.email, campaign_key: $json.campaign_key, campaign_type: $json.campaign_type, correlation_id: $json.correlation_id }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        660,
+        100
+      ],
+      "id": "db862f72-e25a-45c1-8c70-8278d3619940",
+      "name": "Sidecar Marketing Enroll",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Marketing enroll failed';\n\nconst prep = $('Route Enroll Or Advance').first()?.json || {};\nreturn { ...prep, ok: false, enroll_error_message: errorMessage, first: null, _metadata: { processing_stage: 'marketing_enroll_error', severity: 'medium', error_message: errorMessage } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        260
+      ],
+      "id": "486bf79a-ab13-4483-948b-b377f828cd84",
+      "name": "Handle Marketing Enroll Error"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/marketing/advance",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ store_id: $json.store_id || null, limit: $json.limit || 20, correlation_id: $json.correlation_id }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        660,
+        0
+      ],
+      "id": "f4b66ff0-dffe-4100-ae90-28f42aa41ce3",
+      "name": "Sidecar Marketing Advance",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Marketing advance failed';\n\nconst prep = $('Cron Advance Seed').first()?.json || $('Route Enroll Or Advance').first()?.json || {};\nreturn { ...prep, ok: false, advance_error_message: errorMessage, first: null, _metadata: { processing_stage: 'marketing_advance_error', severity: 'medium', error_message: errorMessage } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        160
+      ],
+      "id": "2d384d4a-0217-453a-89cd-8ba2f305a231",
+      "name": "Handle Marketing Advance Error"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst advanced = body.advanced || [];\nconst lines = [\n  `Marketing advance: ${body.count || 0} enrollment(s)`,\n  `mode=${body.mode} allow_send=${body.allow_send}`,\n  ...advanced.slice(0, 5).map((a) => `${a.email}: step=${a.step} status=${a.status} send=${a.send_status}`),\n];\nreturn {\n  ...body,\n  slack_text: lines.join('\\n'),\n  should_alert_slack: false,\n  first: advanced[0] || null,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "ca4cff80-e212-4d02-9fbe-7fab5b08af64",
+      "name": "Flatten Marketing"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b0e01d54-8194-4cc6-88cf-6fb0ad9082be",
+              "leftValue": "={{ $json.first && $json.first.should_send_email }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        0
+      ],
+      "id": "dcdf3bb5-d26c-4088-834b-f44bdf19a26d",
+      "name": "Should Send Email?"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst first = $json.first || {};\nreturn {\n  ...($json),\n  to: first.email,\n  subject: first.subject,\n  text: `${first.body}\\n\\n${first.cta || ''}`,\n  send_status: first.send_status,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        -80
+      ],
+      "id": "e0dae15a-a00a-444d-96e0-7798c23cc5d9",
+      "name": "Prepare Resend Payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.RESEND_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ from: $env.RESEND_FROM_EMAIL || 'Ecom Demo <onboarding@resend.dev>', to: [$json.to], subject: $json.subject, text: $json.text }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1540,
+        -80
+      ],
+      "id": "aa4e504e-1b05-44fb-9934-ed92281f1762",
+      "name": "Resend Send",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Only runs when allow_send; set RESEND_API_KEY + RESEND_FROM_EMAIL in platform-n8n/.env.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Resend send failed';\n\nconst prep = $('Prepare Resend Payload').first()?.json || {};\nreturn { ...prep, ok: false, resend_error_message: errorMessage, _metadata: { processing_stage: 'marketing_resend_error', severity: 'high', error_message: errorMessage } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        40
+      ],
+      "id": "9e1087bf-31ef-4085-a2d7-1680414a6faa",
+      "name": "Handle Resend Error"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        120
+      ],
+      "id": "af94bbf5-7125-49a7-bf3f-2453458fbec0",
+      "name": "Skip Send (test)"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        0
+      ],
+      "id": "c47a4665-40b2-48ab-9da4-92a72359ea45",
+      "name": "Marketing Done"
+    }
+  ],
+  "connections": {
+    "Marketing Advance Cron": {
+      "main": [
+        [
+          {
+            "node": "Cron Advance Seed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron Advance Seed": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Marketing Advance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Route Enroll Or Advance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Enroll Or Advance": {
+      "main": [
+        [
+          {
+            "node": "Do Enroll?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Do Enroll?": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Marketing Enroll",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sidecar Marketing Advance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Marketing Enroll": {
+      "main": [
+        [
+          {
+            "node": "Flatten Marketing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Marketing Enroll Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Marketing Enroll Error": {
+      "main": [
+        [
+          {
+            "node": "Marketing Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Marketing Advance": {
+      "main": [
+        [
+          {
+            "node": "Flatten Marketing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Marketing Advance Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Marketing Advance Error": {
+      "main": [
+        [
+          {
+            "node": "Marketing Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Marketing": {
+      "main": [
+        [
+          {
+            "node": "Should Send Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Send Email?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Resend Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Send (test)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Resend Payload": {
+      "main": [
+        [
+          {
+            "node": "Resend Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resend Send": {
+      "main": [
+        [
+          {
+            "node": "Marketing Done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Resend Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Resend Error": {
+      "main": [
+        [
+          {
+            "node": "Marketing Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Send (test)": {
+      "main": [
+        [
+          {
+            "node": "Marketing Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Ecom Error Handler"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

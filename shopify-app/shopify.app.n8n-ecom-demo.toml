@@ -1,0 +1,34 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+# This file is what `shopify app deploy` actually uses (not shopify.app.toml).
+#
+# After PCD Step 1 is saved, deploy this file so Versions lists all 6 topics
+# (not just products/inventory). Then uninstall+reinstall the app on the store.
+
+client_id = "3968ec03aca9f8a3d393c46495e7e6b5"
+application_url = "https://shopify.dev/apps/default-app-home"
+embedded = false
+name = "n8n ecom demo"
+
+[webhooks]
+api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+topics = [
+  "products/create",
+  "products/update",
+  "inventory_levels/update",
+  "orders/create",
+  "orders/updated",
+  "refunds/create",
+]
+uri = "https://shun-speculate-antitrust.ngrok-free.dev/webhook/ecom-shopify"
+
+[access_scopes]
+scopes = "write_inventory,read_inventory,read_locations,read_orders,read_products,write_products"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [
+  "https://shun-speculate-antitrust.ngrok-free.dev/shopify/auth/callback",
+]

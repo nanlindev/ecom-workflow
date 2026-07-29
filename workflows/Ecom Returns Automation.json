@@ -1,0 +1,322 @@
+{
+  "name": "Ecom Returns Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "store_id"
+            },
+            {
+              "name": "return_id"
+            },
+            {
+              "name": "external_return_id"
+            },
+            {
+              "name": "order_id"
+            },
+            {
+              "name": "amount",
+              "type": "number"
+            },
+            {
+              "name": "days_since_order",
+              "type": "number"
+            },
+            {
+              "name": "reason"
+            },
+            {
+              "name": "correlation_id"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "61cf9238-0e44-4580-937c-04bd1a04f77d",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst item = $input.item.json || {};\nconst amount = item.amount === '' || item.amount == null ? null : Number(item.amount);\nconst days = item.days_since_order === '' || item.days_since_order == null ? null : Number(item.days_since_order);\nreturn {\n  store_id: item.store_id,\n  return_id: item.return_id || null,\n  external_return_id: item.external_return_id || null,\n  order_id: item.order_id || null,\n  amount,\n  days_since_order: days,\n  reason: item.reason || null,\n  correlation_id: item.correlation_id || '',\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "2b4b4b41-1599-456a-8cea-aa9b6ade5f81",
+      "name": "Prepare Return Decide Body"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/returns/decide",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ store_id: $json.store_id, return_id: $json.return_id || null, external_return_id: $json.external_return_id || null, order_id: $json.order_id || null, amount: $json.amount, days_since_order: $json.days_since_order, reason: $json.reason, correlation_id: $json.correlation_id }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        440,
+        0
+      ],
+      "id": "08fda165-4ebe-4dca-94a8-7c8fc7f2eaea",
+      "name": "Sidecar Returns Decide",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Rules: amount + days → auto_approve | manual_review | reject.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Returns decide sidecar failed';\n\nconst prep = $('Prepare Return Decide Body').item.json;\nreturn {\n  ...prep,\n  ok: false,\n  needs_manual_review: false,\n  should_alert_slack: false,\n  returns_error_message: errorMessage,\n  _metadata: { processing_stage: 'returns_decide_failed', severity: 'high' },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ],
+      "id": "3b418819-98ab-485e-b97c-0d7a5dc3b07d",
+      "name": "Handle Return HTTP Error"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst prep = $('Prepare Return Decide Body').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst adminUrl = body.shopify_admin_url || '';\nconst lines = [\n  '↩️ Return needs manual review',\n  `Return: ${body.external_return_id || body.return_id}`,\n  `Shopify order: ${body.shopify_order_id || 'n/a'}`,\n  `Amount: ${body.amount}`,\n  `Reason: ${body.reason || prep.reason || 'n/a'}`,\n  `Days since order: ${body.days_since_order}`,\n  `Why flagged: ${body.review_reason || 'n/a'}`,\n  `Decision: ${body.decision}`,\n  `Action: Open in Shopify (no Slack approve — process refund/return in Admin)`,\n  adminUrl ? `Shopify Admin: ${adminUrl}` : 'Shopify Admin: (set store external_shop_id / SHOPIFY_STORE_HANDLE)',\n  `Correlation: ${body.correlation_id || prep.correlation_id}`,\n];\nreturn {\n  ...prep,\n  ...body,\n  correlation_id: body.correlation_id || prep.correlation_id,\n  slack_text: lines.join('\\n'),\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "id": "4be30a7b-f9df-4682-b274-d86fe30ca706",
+      "name": "Flatten Return Result"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0ef1ca9e-e283-4ed0-8516-cc31e9425fea",
+              "leftValue": "={{ $json.should_alert_slack }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "e639ab03-7400-4b62-894d-4d43c4528bc5",
+      "name": "Needs Manual Review Slack?"
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_ECOM_CHANNEL_ID || 'SLACK_ECOM_CHANNEL_ID' }}"
+        },
+        "text": "={{ $json.slack_text }}"
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        0
+      ],
+      "id": "87ed53c7-1714-48b1-9094-040aa19ca893",
+      "name": "Slack Return Review",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_BOT_CREDENTIAL_ID",
+          "name": "Slack ecom bot"
+        }
+      },
+      "notes": "Bind Slack API Access Token = Bot User OAuth Token (xoxb-). Do not use OAuth2.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Slack return alert failed';\n\nconst prev = $('Flatten Return Result').item.json;\nreturn { ...prev, slack_failed: true, slack_error_message: errorMessage };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        120
+      ],
+      "id": "a0e9d732-f70c-40bf-bcd2-f36c656f97c8",
+      "name": "Log Slack Return Error"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        200
+      ],
+      "id": "e0752158-b724-4ee9-8ac2-a71a151f31db",
+      "name": "No Return Alert"
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Prepare Return Decide Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Return Decide Body": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Returns Decide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Returns Decide": {
+      "main": [
+        [
+          {
+            "node": "Flatten Return Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Return HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Return HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Flatten Return Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Return Result": {
+      "main": [
+        [
+          {
+            "node": "Needs Manual Review Slack?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Manual Review Slack?": {
+      "main": [
+        [
+          {
+            "node": "Slack Return Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Return Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Return Review": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Log Slack Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Ecom Error Handler"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

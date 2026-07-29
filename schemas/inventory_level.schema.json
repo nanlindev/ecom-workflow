@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ecom-workflow.local/schemas/inventory_level.schema.json",
+  "title": "InventoryLevel",
+  "description": "Per-channel inventory level for a store SKU.",
+  "type": "object",
+  "required": ["store_id", "sku", "platform", "available"],
+  "properties": {
+    "store_id": { "type": "string" },
+    "sku": { "type": "string" },
+    "platform": {
+      "type": "string",
+      "enum": ["shopify", "woocommerce", "amazon", "other"]
+    },
+    "location_key": { "type": "string", "default": "default" },
+    "available": { "type": "integer" },
+    "reserved": { "type": "integer", "default": 0 },
+    "safety_stock": { "type": "integer", "default": 0 },
+    "last_synced_at": { "type": ["string", "null"], "format": "date-time" },
+    "raw": { "type": "object", "additionalProperties": true },
+    "correlation_id": { "type": "string", "format": "uuid" }
+  },
+  "additionalProperties": true
+}

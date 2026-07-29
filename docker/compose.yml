@@ -1,0 +1,67 @@
+name: ecom-workflow
+
+include:
+  - path: ../../platform-n8n/docker/templates/networks.yml
+
+services:
+  ecom_postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${ECOM_POSTGRES_USER:-ecom}
+      POSTGRES_PASSWORD: ${ECOM_POSTGRES_PASSWORD:-ecom}
+      POSTGRES_DB: ${ECOM_POSTGRES_DB:-ecom}
+    volumes:
+      - ecom_pg_data:/var/lib/postgresql/data
+      - ../sql/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ECOM_POSTGRES_USER:-ecom} -d ${ECOM_POSTGRES_DB:-ecom}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - n8n_platform
+
+  ecom_python_ai:
+    extends:
+      file: ../../platform-n8n/docker/templates/python-sidecar.base.yml
+      service: python_sidecar_template
+    env_file:
+      - ../.env
+    build:
+      context: ..
+      dockerfile: python-service/Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+    image: ghcr.io/nanlindev/ecom-workflow/python-ai-service:latest
+    depends_on:
+      ecom_postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${ECOM_POSTGRES_USER:-ecom}:${ECOM_POSTGRES_PASSWORD:-ecom}@ecom_postgres:5432/${ECOM_POSTGRES_DB:-ecom}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LANGFUSE_TRACING_ENVIRONMENT: ${ENVIRONMENT:-development}
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: n8n-ecom-ai-service
+      OTEL_SERVICE_VERSION: v1.0
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=${ENVIRONMENT:-development},service.name=n8n-ecom-ai-service,gen_ai.system=deepseek,tags=ecom-workflow,langfuse.tags=ecom-workflow
+    ports:
+      - "8003:8001"
+    volumes:
+      - ../prompts:/app/prompts:ro
+      - ../sql/migrations:/app/sql/migrations:ro
+
+volumes:
+  ecom_pg_data:

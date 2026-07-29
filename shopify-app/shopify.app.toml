@@ -1,0 +1,38 @@
+# https://shopify.dev/docs/apps/build/cli-for-apps/app-configuration
+# Webhook ingress for ecom-workflow → n8n `/webhook/ecom-shopify`
+#
+# After `shopify app config link` / `shopify app init`, replace client_id.
+# When ngrok / WEBHOOK_URL changes, update the uri below and run `shopify app deploy`.
+
+name = "n8n Ecom Workflow"
+client_id = "3968ec03aca9f8a3d393c46495e7e6b5"
+application_url = "https://shopify.dev/apps/default-app-home"
+embedded = false
+handle = "n8n-ecom-workflow"
+
+[access_scopes]
+# read* = ingest/demo; write* reserved for gated production writeback later
+scopes = "read_products,write_products,read_inventory,write_inventory,read_orders,write_orders,read_locations,read_fulfillments,read_merchant_managed_fulfillment_orders"
+
+[auth]
+# Required by schema even for non-embedded apps; unused until OAuth install UI is added
+redirect_urls = [
+  "https://shun-speculate-antitrust.ngrok-free.dev/shopify/auth/callback",
+]
+
+[webhooks]
+api_version = "2025-10"
+
+# One subscription → many topics → same n8n path (no per-topic Mutation)
+# orders/* + refunds/create require Protected Customer Data approval in Partner Dashboard.
+# Until then: declare only non-PCD topics here; keep order/refund on store Notifications.
+[[webhooks.subscriptions]]
+topics = [
+  "products/create",
+  "products/update",
+  "inventory_levels/update",
+]
+uri = "https://shun-speculate-antitrust.ngrok-free.dev/webhook/ecom-shopify"
+
+[build]
+automatically_update_urls_on_dev = false

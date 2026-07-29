@@ -1,0 +1,398 @@
+{
+  "name": "Ecom Inventory Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "store_id"
+            },
+            {
+              "name": "store_key"
+            },
+            {
+              "name": "sku"
+            },
+            {
+              "name": "correlation_id"
+            },
+            {
+              "name": "slave_levels"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "9f89583a-99ca-4cdb-b1f9-412e731defc5",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        220
+      ],
+      "id": "b7571b41-c21a-4b30-82b5-df8dbd8cf968",
+      "name": "Inventory Reconcile Cron",
+      "notes": "Periodic inventory reconciliation when webhooks are missed.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nreturn {\n  store_id: $env.ECOM_DEMO_STORE_ID || '',\n  store_key: $env.ECOM_DEMO_STORE_KEY || 'demo-shopify',\n  sku: '',\n  correlation_id: require('crypto').randomUUID(),\n  slave_levels: [],\n  trigger_source: 'cron',\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        220
+      ],
+      "id": "fe88dfa9-8149-4329-a631-a26669c1d0eb",
+      "name": "Cron Seed Payload"
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        440,
+        80
+      ],
+      "id": "2b7f7fa0-25a2-4daf-bae4-512a25f528c9",
+      "name": "Merge Inventory Triggers",
+      "notes": "Merge multi-source inventory observations before master conflict resolution.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst item = $input.item.json || {};\nconst slave = item.slave_levels;\nlet slave_levels = [];\nif (Array.isArray(slave)) slave_levels = slave;\nelse if (typeof slave === 'string' && slave.trim()) {\n  try { slave_levels = JSON.parse(slave); } catch { slave_levels = []; }\n}\nreturn {\n  store_id: item.store_id || null,\n  store_key: item.store_key || null,\n  sku: item.sku || null,\n  correlation_id: item.correlation_id || '',\n  slave_levels: slave_levels.length ? slave_levels : null,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        80
+      ],
+      "id": "336368ac-7d8b-4c3a-8149-f2dd38bac2d2",
+      "name": "Prepare Inventory Sync Body",
+      "notes": "Normalize Execute/Cron payload; optional slave_levels from Merge upstream.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/inventory/sync",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ store_id: $json.store_id || null, store_key: $json.store_key || null, sku: $json.sku || null, correlation_id: $json.correlation_id, slave_levels: $json.slave_levels }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        880,
+        80
+      ],
+      "id": "409df529-7cbb-453b-9b23-6e0bcf69bc84",
+      "name": "Sidecar Inventory Sync",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Master channel wins; test mode sets writeback_status=skipped_test_mode.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Inventory sync sidecar failed';\n\nconst prep = $('Prepare Inventory Sync Body').item.json;\nreturn {\n  ...prep,\n  ok: false,\n  has_drift: false,\n  should_alert_slack: false,\n  writeback_status: 'failed',\n  inventory_error_message: errorMessage,\n  _metadata: { processing_stage: 'inventory_sync_failed', severity: 'high' },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        260
+      ],
+      "id": "2d5e4cd6-6e8d-499c-9225-0aa569ee0520",
+      "name": "Handle Inventory HTTP Error"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst prep = $('Prepare Inventory Sync Body').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst drifts = body.drifts || [];\nreturn {\n  ...prep,\n  ...body,\n  correlation_id: body.correlation_id || prep.correlation_id,\n  slack_text: [\n    '📦 Inventory drift detected',\n    `Store: ${body.store_id || prep.store_id}`,\n    `Master: ${body.master_channel || 'shopify'}`,\n    `Drifts: ${drifts.length}`,\n    drifts.slice(0, 5).map(d => `${d.sku}: ${d.slave_channel}=${d.slave_available} vs master=${d.master_available}`).join('\\n'),\n    `Writeback: ${body.writeback_status || 'n/a'}`,\n    `Correlation: ${body.correlation_id || prep.correlation_id}`,\n  ].filter(Boolean).join('\\n'),\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        80
+      ],
+      "id": "f1f8a857-3c00-41e2-9a88-15ab3995adb3",
+      "name": "Flatten Inventory Result"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "da5b0a01-9cb9-48c3-99bc-b471fe912231",
+              "leftValue": "={{ $json.should_alert_slack }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        80
+      ],
+      "id": "b8f59bbd-57b2-464e-b665-caa5b5a57344",
+      "name": "Should Alert Drift?"
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_ECOM_CHANNEL_ID || 'SLACK_ECOM_CHANNEL_ID' }}"
+        },
+        "text": "={{ $json.slack_text }}"
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        0
+      ],
+      "id": "11ad6aec-572a-417a-86e5-8906f30d77a8",
+      "name": "Slack Inventory Drift",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_BOT_CREDENTIAL_ID",
+          "name": "Slack ecom bot"
+        }
+      },
+      "notes": "Bind Slack API Access Token = Bot User OAuth Token (xoxb-). Do not use OAuth2.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Slack drift alert failed';\n\nconst prev = $('Flatten Inventory Result').item.json;\nreturn { ...prev, slack_failed: true, slack_error_message: errorMessage };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        120
+      ],
+      "id": "a2f1cb97-08d8-478f-9105-fb7eae1f01d1",
+      "name": "Log Slack Drift Error"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1540,
+        200
+      ],
+      "id": "cf7f4470-f453-42f6-9252-087e23519082",
+      "name": "No Drift Alert"
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Merge Inventory Triggers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inventory Reconcile Cron": {
+      "main": [
+        [
+          {
+            "node": "Cron Seed Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron Seed Payload": {
+      "main": [
+        [
+          {
+            "node": "Merge Inventory Triggers",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Inventory Triggers": {
+      "main": [
+        [
+          {
+            "node": "Prepare Inventory Sync Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Inventory Sync Body": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Inventory Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Inventory Sync": {
+      "main": [
+        [
+          {
+            "node": "Flatten Inventory Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Inventory HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Inventory HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Flatten Inventory Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Inventory Result": {
+      "main": [
+        [
+          {
+            "node": "Should Alert Drift?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Alert Drift?": {
+      "main": [
+        [
+          {
+            "node": "Slack Inventory Drift",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Drift Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Inventory Drift": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Log Slack Drift Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Ecom Error Handler"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

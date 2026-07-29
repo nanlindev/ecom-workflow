@@ -1,0 +1,241 @@
+{
+  "name": "Ecom Customer Insights",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "41464abe-a46f-47b0-9fcf-d304d424a095",
+      "name": "Customer Insights Cron",
+      "notes": "Periodic inventory reconciliation when webhooks are missed.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nreturn {\n  store_id: $env.ECOM_DEMO_STORE_ID || '',\n  correlation_id: require('crypto').randomUUID(),\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "122d24be-6466-4f30-bbd1-225157342cac",
+      "name": "Insights Seed"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/insights/rfm",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ store_id: $json.store_id, correlation_id: $json.correlation_id }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        440,
+        0
+      ],
+      "id": "3b81f43e-1c24-44d8-b4ec-32e66c18a31c",
+      "name": "Sidecar RFM",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Insights RFM failed';\n\nconst prep = $('Insights Seed').first()?.json || {};\nreturn { ...prep, ok: false, rfm_error_message: errorMessage, _metadata: { processing_stage: 'insights_rfm_error', severity: 'medium', error_message: errorMessage } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        160
+      ],
+      "id": "704734e3-fc76-4b7c-ae9f-b3620dbe341f",
+      "name": "Handle RFM HTTP Error"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/insights/churn",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ store_id: $('Insights Seed').item.json.store_id, correlation_id: $('Insights Seed').item.json.correlation_id }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        660,
+        0
+      ],
+      "id": "71db9337-abf5-4374-bb8a-0d854acc24cf",
+      "name": "Sidecar Churn",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Insights churn failed';\n\nconst prep = $('Insights Seed').first()?.json || {};\nreturn { ...prep, ok: false, churn_error_message: errorMessage, _metadata: { processing_stage: 'insights_churn_error', severity: 'medium', error_message: errorMessage } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        160
+      ],
+      "id": "39f1ee49-3a0f-470b-9335-aaf48da6f6f2",
+      "name": "Handle Churn HTTP Error"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        880,
+        0
+      ],
+      "id": "180a65a5-0ff8-4663-a469-8da4e7faf4a4",
+      "name": "Insights Done"
+    }
+  ],
+  "connections": {
+    "Customer Insights Cron": {
+      "main": [
+        [
+          {
+            "node": "Insights Seed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insights Seed": {
+      "main": [
+        [
+          {
+            "node": "Sidecar RFM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar RFM": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Churn",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle RFM HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle RFM HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Insights Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Churn": {
+      "main": [
+        [
+          {
+            "node": "Insights Done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Churn HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Churn HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Insights Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Ecom Error Handler"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

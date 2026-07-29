@@ -1,0 +1,24 @@
+name: Deploy Ecom Workflow to Server
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    permissions:
+      contents: read
+      packages: write
+
+    uses: nanlindev/platform-n8n/.github/workflows/reusable-deploy-python.yml@main
+    with:
+      python_image_name: ghcr.io/nanlindev/ecom-workflow/python-ai-service
+      deploy_path: /home/deploy/projects/ecom-workflow
+      compose_file: docker/compose.yml
+      compose_service: ecom_python_ai
+      build_context: .
+      dockerfile: python-service/Dockerfile
+    secrets:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}

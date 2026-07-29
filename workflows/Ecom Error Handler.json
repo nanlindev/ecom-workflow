@@ -1,0 +1,385 @@
+{
+  "name": "Ecom Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "be5879af-9416-4e27-ad09-dd83b7e1f6cb",
+      "name": "Error Trigger",
+      "notes": "Workflow-level errors. Re-bind as Error Workflow on other Ecom flows after import.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst err = $input.item.json;\nconst execution = err.execution || {};\nconst error = err.error || {};\nreturn {\n  workflow: err.workflow?.name || 'unknown',\n  execution_id: execution.id || '',\n  node: error.node?.name || 'unknown',\n  message: error.message || JSON.stringify(error),\n  stack: error.stack || '',\n  correlation_id: error.context?.correlation_id || execution.customData?.correlation_id || '',\n  retry_suggestion: 'manual',\n  timestamp: new Date().toISOString(),\n  _metadata: { processing_stage: 'global_error_logged', severity: 'critical' },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "bf8ee752-bd7b-47be-81a1-5d7af8b8c2dc",
+      "name": "Extract Error Details",
+      "notes": "Normalize n8n error payload.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst item = $input.item.json;\nreturn {\n  ...item,\n  correlation_id: item.correlation_id || '',\n  workflow_name: item.workflow || 'unknown',\n  node_name: item.node || 'unknown',\n  error_message: item.message || '',\n  detail: {\n    stack: item.stack || '',\n    execution_id: item.execution_id || '',\n    retry_suggestion: item.retry_suggestion || 'manual',\n    timestamp: item.timestamp || new Date().toISOString(),\n  },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "adfec688-845d-4e2d-8932-260b1d4e0aff",
+      "name": "Prepare Error Log Body"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/errors/log",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow_name: $json.workflow_name, node_name: $json.node_name, error_message: $json.error_message, correlation_id: $json.correlation_id, detail: $json.detail }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        660,
+        0
+      ],
+      "id": "4a212780-5006-4391-9704-b7b3137be04f",
+      "name": "Write error_logs",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Persist to ecom_postgres.error_logs via sidecar.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Failed to write error_logs';\n\nconst prev = $('Prepare Error Log Body').item.json;\nreturn {\n  ...prev,\n  error_log_write_failed: true,\n  error_log_error_message: errorMessage,\n  _metadata: { processing_stage: 'error_log_write_failed', severity: 'high' },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ],
+      "id": "dcbe44aa-8c35-4c60-a6ac-38142aaa6086",
+      "name": "Handle error_logs Write Failure"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://ecom_python_ai:8001/config",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        880,
+        0
+      ],
+      "id": "c6f90a1e-b2c5-4731-bcc3-f29aac0223ee",
+      "name": "Get Config For Alert",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Get config for error alert failed';\n\nconst extracted = $('Extract Error Details').first()?.json || {};\nreturn { ...extracted, config_error_message: errorMessage, mode: 'production', should_alert_slack: true, _metadata: { processing_stage: 'error_handler_config_failed', severity: 'high', error_message: errorMessage } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ],
+      "id": "8dd607d1-d14c-4ab9-b568-9eef974d6a29",
+      "name": "Handle Config HTTP Error",
+      "notes": "Config unavailable → still attempt Slack alert",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst extracted = $('Extract Error Details').first()?.json || {};\nconst cfg = $('Get Config For Alert').first()?.json || {};\nconst mode = String(cfg.mode || cfg.flat?.mode || 'test').toLowerCase();\nconst flat = cfg.flat || {};\nconst enabled = String(flat.error_alert_enabled || 'true').toLowerCase() === 'true';\nconst slackEnabled = String(flat.slack_enabled || 'true').toLowerCase() === 'true';\nreturn {\n  ...extracted,\n  mode,\n  should_alert_slack: mode === 'production' && enabled && slackEnabled,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ],
+      "id": "641036d6-4600-4c04-a00f-29e88c94f4a3",
+      "name": "Check Error Alert Enabled"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5d0f8cbe-b231-4fd0-8034-d991c65b1574",
+              "leftValue": "={{ $json.should_alert_slack }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        0
+      ],
+      "id": "79de6e93-64d4-449d-b949-5a9c1837e3b2",
+      "name": "Should Alert Slack?"
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_ECOM_CHANNEL_ID || 'SLACK_ECOM_CHANNEL_ID' }}"
+        },
+        "text": "=🚨 Ecom Workflow Error\nWorkflow: {{ $json.workflow }}\nNode: {{ $json.node }}\nMessage: {{ $json.message }}\nCorrelation: {{ $json.correlation_id }}"
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        0
+      ],
+      "id": "20b146e6-af66-4129-903e-624b7aa7e09f",
+      "name": "Slack Error Alert",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_BOT_CREDENTIAL_ID",
+          "name": "Slack ecom bot"
+        }
+      },
+      "notes": "Bind Slack API Access Token = Bot User OAuth Token (xoxb-). Do not use OAuth2.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Unknown Slack Error Alert failure';\n\nconst prev = $('Check Error Alert Enabled').item.json;\nreturn {\n  ...prev,\n  slack_alert_failed: true,\n  slack_error_message: errorMessage,\n  _metadata: { processing_stage: 'error_slack_failed', severity: 'low' },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        120
+      ],
+      "id": "0de50add-fe8e-493c-adb4-97fa8a9b2189",
+      "name": "Log Slack Error"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1540,
+        200
+      ],
+      "id": "55f38bb9-d606-4492-8004-e58ae0c5dd39",
+      "name": "No Slack Alert"
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Error Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Error Details": {
+      "main": [
+        [
+          {
+            "node": "Prepare Error Log Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Error Log Body": {
+      "main": [
+        [
+          {
+            "node": "Write error_logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write error_logs": {
+      "main": [
+        [
+          {
+            "node": "Get Config For Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle error_logs Write Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle error_logs Write Failure": {
+      "main": [
+        [
+          {
+            "node": "Get Config For Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Config For Alert": {
+      "main": [
+        [
+          {
+            "node": "Check Error Alert Enabled",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Config HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Config HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Should Alert Slack?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Error Alert Enabled": {
+      "main": [
+        [
+          {
+            "node": "Should Alert Slack?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Alert Slack?": {
+      "main": [
+        [
+          {
+            "node": "Slack Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Error Alert": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Log Slack Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

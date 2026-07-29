@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+.coverage
+*.cover
+*.log
+
+# IDE / agent
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.local
+.env.prod
+
+# Shopify CLI local cache
+shopify-app/.shopify/
+
+# Portfolio capture
+assets/raw/
+assets/**/*.mp4
