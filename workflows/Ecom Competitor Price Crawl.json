@@ -18,7 +18,7 @@
         0,
         0
       ],
-      "id": "c6ca8cfa-82b3-4ced-9ee7-c4d3a2c51285",
+      "id": "85926dcf-e944-4d3b-a3e5-66c99a343f8c",
       "name": "Competitor Crawl Cron",
       "notes": "Periodic inventory reconciliation when webhooks are missed.",
       "notesInFlow": true
@@ -42,7 +42,7 @@
         220,
         0
       ],
-      "id": "93849e40-cef6-4831-bd73-2a6b6a56bfda",
+      "id": "e27a7681-05b4-4925-9014-56a1a92e1585",
       "name": "Load Competitor Targets",
       "retryOnFail": true,
       "maxTries": 3,
@@ -62,13 +62,13 @@
         220,
         160
       ],
-      "id": "ed94ec6a-031b-4215-b121-3a0d470804d3",
+      "id": "8485c068-c4c8-46b6-8e60-e30890f84a8e",
       "name": "Handle Targets HTTP Error"
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst targets = Array.isArray(body.targets) ? body.targets : [];\nconst store_id = body.store_id || $env.ECOM_DEMO_STORE_ID || '';\nconst defaultSku = body.sku || 'TEE-BLACK-M';\nif (!targets.length) {\n  return [{\n    json: {\n      store_id,\n      url: 'https://example.com/products/tee-black-m',\n      sku: defaultSku,\n      source_name: 'example-comp',\n      correlation_id: require('crypto').randomUUID(),\n      demo_html: '<html><body><h1>Demo Tee</h1><p>Price: $84.00</p></body></html>',\n    },\n  }];\n}\nreturn targets.map((t) => ({\n  json: {\n    store_id,\n    url: t.url || t,\n    sku: t.sku || defaultSku,\n    source_name: t.source_name || 'competitor',\n    correlation_id: require('crypto').randomUUID(),\n    demo_html: '',\n  },\n}));\n"
+        "jsCode": "\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst targets = Array.isArray(body.targets) ? body.targets : [];\nconst store_id = body.store_id || $env.ECOM_DEMO_STORE_ID || '';\nconst defaultSku = body.sku || 'sku-managed-1';\nconst demoPriceBySku = {\n  'sku-managed-1': '2499.00',\n  'SNOWBOARD-LIQUID': '3899.00',\n};\nfunction skuDemoHtml(sku) {\n  const price = demoPriceBySku[sku] || '2499.00';\n  return `<html><body><article data-competitor-sku=\"${sku}\" data-competitor-price=\"${price}\"><h1>${sku}</h1><p>SKU: ${sku}</p><p>Price: $${price}</p></article></body></html>`;\n}\nif (!targets.length) {\n  return [{\n    json: {\n      store_id,\n      url: 'https://example.com/products/sku-managed-1',\n      sku: defaultSku,\n      source_name: 'example-comp',\n      correlation_id: require('crypto').randomUUID(),\n      demo_html: skuDemoHtml(defaultSku),\n      allow_demo_fallback: true,\n    },\n  }];\n}\nreturn targets.map((t) => {\n  const sku = t.sku || defaultSku;\n  return {\n    json: {\n      store_id,\n      url: t.url || t,\n      sku,\n      source_name: t.source_name || 'competitor',\n      correlation_id: require('crypto').randomUUID(),\n      demo_html: skuDemoHtml(sku),\n      allow_demo_fallback: true,\n    },\n  };\n});\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -76,7 +76,7 @@
         440,
         0
       ],
-      "id": "a15f221e-c5af-4667-b7d1-878da6d3a2f9",
+      "id": "e0fc0d6e-aa45-4042-879a-71172acb41ac",
       "name": "Expand Targets"
     },
     {
@@ -98,7 +98,7 @@
         660,
         0
       ],
-      "id": "2429b63b-7e6b-4a9a-ac68-d2b478a63c35",
+      "id": "d09c6e35-581c-4544-9796-f272a547ed13",
       "name": "Fetch Competitor Page",
       "retryOnFail": true,
       "maxTries": 3,
@@ -110,7 +110,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "\n// HTTP Fetch replaces item json with response body — restore context from Expand Targets.\nconst item = $input.item.json || {};\nlet ctx = {};\ntry { ctx = $('Expand Targets').item.json || {}; } catch (_) { ctx = {}; }\n\nconst store_id = item.store_id || ctx.store_id || $env.ECOM_DEMO_STORE_ID || '';\nconst url = item.url || ctx.url || 'https://example.com/products/tee-black-m';\nconst sku = item.sku || ctx.sku || 'TEE-BLACK-M';\nconst source_name = item.source_name || ctx.source_name || 'competitor';\nconst correlation_id = item.correlation_id || ctx.correlation_id || require('crypto').randomUUID();\nconst demo_html = item.demo_html || ctx.demo_html || '<html><body><h1>Demo Tee</h1><p>Price: $84.00</p></body></html>';\n\nlet raw = '';\nif (typeof item === 'string') {\n  raw = item;\n} else if (typeof item.data === 'string') {\n  raw = item.data;\n} else if (typeof item.body === 'string') {\n  raw = item.body;\n} else if (item.data != null || item.body != null) {\n  const fetched = item.data || item.body;\n  raw = typeof fetched === 'string' ? fetched : JSON.stringify(fetched);\n} else if (item.raw_content) {\n  raw = String(item.raw_content);\n} else {\n  // Plain HTML response often lands as a single-field object or stray keys — stringify whole item as last resort only if it looks like HTML.\n  const asText = typeof item === 'object' ? (item.html || item.content || '') : '';\n  raw = asText || '';\n  if (!raw && Object.keys(item).length === 1) {\n    const only = item[Object.keys(item)[0]];\n    if (typeof only === 'string') raw = only;\n  }\n  // n8n sometimes puts the entire HTML string as the json value via weird shapes — detect doctype\n  if (!raw) {\n    const blob = JSON.stringify(item);\n    if (blob.includes('<html') || blob.includes('<!doctype')) {\n      // Prefer extracting from known string fields first; if item IS effectively the HTML document fields\n      raw = Object.values(item).find((v) => typeof v === 'string' && v.includes('<')) || '';\n    }\n  }\n}\n\nraw = String(raw || '');\n// Example Domain / empty pages have no price — use seeded demo HTML for reliable demos.\nconst hasPrice = /\\$\\s*\\d|price[\\s:=]/i.test(raw);\nif (!hasPrice || raw.length < 20) {\n  raw = demo_html;\n}\n\nif (!store_id) {\n  throw new Error('store_id missing — set ECOM_DEMO_STORE_ID in n8n env or ensure /competitors/targets returns store_id');\n}\n\nreturn {\n  store_id,\n  url,\n  sku,\n  source_name,\n  raw_content: raw.slice(0, 8000),\n  correlation_id,\n};\n"
+        "jsCode": "\n// HTTP Fetch replaces item json with response body — restore context from Expand Targets.\nconst item = $input.item.json || {};\nlet ctx = {};\ntry { ctx = $('Expand Targets').item.json || {}; } catch (_) { ctx = {}; }\n\nconst store_id = item.store_id || ctx.store_id || $env.ECOM_DEMO_STORE_ID || '';\nconst url = item.url || ctx.url || '';\nconst sku = item.sku || ctx.sku || 'sku-managed-1';\nconst source_name = item.source_name || ctx.source_name || 'competitor';\nconst correlation_id = item.correlation_id || ctx.correlation_id || require('crypto').randomUUID();\nconst allow_demo_fallback = item.allow_demo_fallback !== false && ctx.allow_demo_fallback !== false;\nconst demo_html = (item.demo_html || ctx.demo_html || '').trim();\n\nfunction extractRaw(obj) {\n  if (obj == null) return '';\n  if (typeof obj === 'string') return obj;\n  if (typeof obj.data === 'string') return obj.data;\n  if (typeof obj.body === 'string') return obj.body;\n  if (typeof obj.html === 'string') return obj.html;\n  if (typeof obj.content === 'string') return obj.content;\n  if (typeof obj.raw_content === 'string') return obj.raw_content;\n  if (obj.data != null && typeof obj.data !== 'object') return String(obj.data);\n  if (obj.body != null && typeof obj.body !== 'object') return String(obj.body);\n  // n8n sometimes wraps HTML as the sole string field\n  if (typeof obj === 'object') {\n    const keys = Object.keys(obj);\n    if (keys.length === 1 && typeof obj[keys[0]] === 'string') return obj[keys[0]];\n    for (const v of Object.values(obj)) {\n      if (typeof v === 'string' && (v.includes('<html') || v.includes('Price:') || v.includes('data-competitor-price'))) {\n        return v;\n      }\n    }\n  }\n  return '';\n}\n\nlet raw = extractRaw(item);\nif (!raw) {\n  const blob = JSON.stringify(item);\n  if (blob.includes('<html') || blob.includes('<!doctype') || blob.includes('data-competitor-price')) {\n    raw = Object.values(item).find((v) => typeof v === 'string' && v.includes('<')) || '';\n  }\n}\n\nraw = String(raw || '');\nconst hasPrice =\n  /data-competitor-price\\s*=/.test(raw) ||\n  /\\$\\s*\\d/.test(raw) ||\n  /price[\\s:=]/i.test(raw);\n\nlet used_demo_fallback = false;\n// Fall back to SKU-scoped demo HTML when fetch has no readable price.\nif ((!hasPrice || raw.length < 20) && allow_demo_fallback && demo_html) {\n  raw = demo_html;\n  used_demo_fallback = true;\n}\n\nif (!store_id) {\n  throw new Error('store_id missing — set ECOM_DEMO_STORE_ID in n8n env or ensure /competitors/targets returns store_id');\n}\nif (!raw || raw.length < 10) {\n  throw new Error(`Competitor page empty / unreadable for ${sku} url=${url}. Check Fetch node response and competitor_urls.`);\n}\n\nreturn {\n  store_id,\n  url,\n  sku,\n  source_name,\n  raw_content: raw.slice(0, 8000),\n  correlation_id,\n  used_demo_fallback,\n};\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -118,7 +118,7 @@
         880,
         0
       ],
-      "id": "f00c65d5-98e1-4858-879e-2d0ab96f6595",
+      "id": "5fc8eb0e-538a-4b11-99c2-2e3511fc523d",
       "name": "Prepare Parse Body"
     },
     {
@@ -147,7 +147,7 @@
         1100,
         0
       ],
-      "id": "490c9865-d06d-4e81-891f-712b442b8b6f",
+      "id": "a555ef15-0590-425b-997a-3f350ec923fa",
       "name": "Sidecar Competitor Parse",
       "retryOnFail": true,
       "maxTries": 3,
@@ -167,7 +167,7 @@
         1100,
         200
       ],
-      "id": "fc2523fd-96cc-478e-beab-22338653a142",
+      "id": "7233f09b-50b6-4cb0-887e-3ba360442049",
       "name": "Handle Crawl HTTP Error"
     },
     {
@@ -178,7 +178,7 @@
         1320,
         0
       ],
-      "id": "ba9e6b62-4e73-4828-9264-ffa49d1b896c",
+      "id": "561d6e75-6fd1-4eca-abdf-b7fcf2f6847e",
       "name": "Crawl Done"
     }
   ],

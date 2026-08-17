@@ -40,7 +40,7 @@
         0,
         0
       ],
-      "id": "61cf9238-0e44-4580-937c-04bd1a04f77d",
+      "id": "73afb953-3df7-4790-8474-6fc7bfd358b7",
       "name": "When Executed by Another Workflow"
     },
     {
@@ -54,7 +54,7 @@
         220,
         0
       ],
-      "id": "2b4b4b41-1599-456a-8cea-aa9b6ade5f81",
+      "id": "9628c678-ba00-4d39-9ba6-275f56d56544",
       "name": "Prepare Return Decide Body"
     },
     {
@@ -83,7 +83,7 @@
         440,
         0
       ],
-      "id": "08fda165-4ebe-4dca-94a8-7c8fc7f2eaea",
+      "id": "0458ca8b-dfcd-42b8-9304-8cbfda17a409",
       "name": "Sidecar Returns Decide",
       "retryOnFail": true,
       "maxTries": 3,
@@ -103,7 +103,7 @@
         440,
         200
       ],
-      "id": "3b418819-98ab-485e-b97c-0d7a5dc3b07d",
+      "id": "09cdaf43-1014-40e8-9abd-cb34a62ef9d2",
       "name": "Handle Return HTTP Error"
     },
     {
@@ -117,7 +117,7 @@
         660,
         0
       ],
-      "id": "4be30a7b-f9df-4682-b274-d86fe30ca706",
+      "id": "8368343a-c57d-4750-8834-17963419553c",
       "name": "Flatten Return Result"
     },
     {
@@ -131,7 +131,7 @@
           },
           "conditions": [
             {
-              "id": "0ef1ca9e-e283-4ed0-8516-cc31e9425fea",
+              "id": "862d3372-3357-4638-b145-44fc50923b3b",
               "leftValue": "={{ $json.should_alert_slack }}",
               "rightValue": "true",
               "operator": {
@@ -151,7 +151,7 @@
         880,
         0
       ],
-      "id": "e639ab03-7400-4b62-894d-4d43c4528bc5",
+      "id": "9a04d727-b768-4607-b1f7-c9ab4577878c",
       "name": "Needs Manual Review Slack?"
     },
     {
@@ -171,7 +171,7 @@
         1100,
         0
       ],
-      "id": "87ed53c7-1714-48b1-9094-040aa19ca893",
+      "id": "9a5c5326-70a5-4579-bfba-a9212825aaf1",
       "name": "Slack Return Review",
       "retryOnFail": true,
       "maxTries": 3,
@@ -197,7 +197,7 @@
         1320,
         120
       ],
-      "id": "a0e9d732-f70c-40bf-bcd2-f36c656f97c8",
+      "id": "a7c40de8-c348-44c6-acdd-a9f5085aafd5",
       "name": "Log Slack Return Error"
     },
     {
@@ -208,7 +208,7 @@
         1100,
         200
       ],
-      "id": "e0752158-b724-4ee9-8ac2-a71a151f31db",
+      "id": "59bd85a8-08b4-47c9-a370-04720a4f91e8",
       "name": "No Return Alert"
     }
   ],

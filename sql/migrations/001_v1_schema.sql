@@ -162,7 +162,7 @@ CREATE TABLE IF NOT EXISTS pricing_recommendations (
     reasoning       TEXT,
     strategy        TEXT,
     status          TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending', 'approved', 'rejected', 'applied', 'skipped_test_mode')),
+                    CHECK (status IN ('pending', 'approved', 'rejected', 'applied', 'skipped_test_mode', 'held')),
     correlation_id  UUID,
     fallback_used   BOOLEAN NOT NULL DEFAULT FALSE,
     meta            JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -272,7 +272,7 @@ CREATE TABLE IF NOT EXISTS config_pricing (
     description     TEXT,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-COMMENT ON TABLE config_pricing IS 'Pricing engine strategy and auto_apply flags';
+COMMENT ON TABLE config_pricing IS 'Pricing engine strategy and writeback channel flags';
 
 CREATE TABLE IF NOT EXISTS config_marketing (
     key             TEXT PRIMARY KEY,
@@ -314,7 +314,6 @@ ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO config_pricing (key, value, description) VALUES
     ('enabled', 'true', 'Pricing engine on/off'),
-    ('auto_apply', 'false', 'Apply approved prices without extra gate'),
     ('min_margin_pct', '15', 'Minimum margin percent')
 ON CONFLICT (key) DO NOTHING;
 
@@ -328,7 +327,7 @@ ON CONFLICT (key) DO NOTHING;
 INSERT INTO config_notifications (key, value, description) VALUES
     ('slack_enabled', 'true', 'Slack notifications master switch'),
     ('slack_in_test', 'true', 'Allow Slack in test (ops alerts)'),
-    ('email_provider', 'sendgrid', 'MVP email provider')
+    ('email_provider', 'resend', 'Email provider used by n8n Marketing Orchestrator (Resend HTTP)')
 ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO prompt_registry (prompt_key, version, model, file_path, description) VALUES

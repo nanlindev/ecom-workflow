@@ -9,7 +9,7 @@
         0,
         0
       ],
-      "id": "be5879af-9416-4e27-ad09-dd83b7e1f6cb",
+      "id": "f13a560e-0794-481c-86b2-6ba79d20101b",
       "name": "Error Trigger",
       "notes": "Workflow-level errors. Re-bind as Error Workflow on other Ecom flows after import.",
       "notesInFlow": true
@@ -17,7 +17,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "\nconst err = $input.item.json;\nconst execution = err.execution || {};\nconst error = err.error || {};\nreturn {\n  workflow: err.workflow?.name || 'unknown',\n  execution_id: execution.id || '',\n  node: error.node?.name || 'unknown',\n  message: error.message || JSON.stringify(error),\n  stack: error.stack || '',\n  correlation_id: error.context?.correlation_id || execution.customData?.correlation_id || '',\n  retry_suggestion: 'manual',\n  timestamp: new Date().toISOString(),\n  _metadata: { processing_stage: 'global_error_logged', severity: 'critical' },\n};\n"
+        "jsCode": "\nconst err = $input.item.json || {};\nconst execution = err.execution || {};\nconst error = err.error || {};\n\nfunction asText(v) {\n  if (v == null) return '';\n  if (typeof v === 'string') {\n    const t = v.trim();\n    return t && t !== '{}' && t !== '[object Object]' ? t : '';\n  }\n  if (typeof v === 'number' || typeof v === 'boolean') return String(v);\n  return '';\n}\n\nfunction pickMessage(e, depth = 0) {\n  if (e == null || depth > 4) return '';\n  if (typeof e === 'string') return asText(e);\n  if (typeof e !== 'object') return String(e);\n  // n8n sometimes sets message to {} / nested Error-like objects\n  const nested = [\n    e.message,\n    e.description,\n    e.error,\n    e.cause,\n    e.reason,\n    e.statusMessage,\n    e.messages?.[0],\n    e.response?.body?.message,\n    e.response?.data?.message,\n    e.context?.description,\n    e.context?.message,\n  ];\n  for (const c of nested) {\n    const direct = asText(c);\n    if (direct) return direct;\n    if (c && typeof c === 'object') {\n      const inner = pickMessage(c, depth + 1);\n      if (inner) return inner;\n    }\n  }\n  if (typeof e.name === 'string' && e.name && e.name !== 'Error' && e.name !== 'NodeOperationError') {\n    return e.name;\n  }\n  try {\n    const s = JSON.stringify(e);\n    if (s && s !== '{}' && s !== 'null') return s.slice(0, 500);\n  } catch (_) {}\n  return '';\n}\n\nconst nodeName =\n  error.node?.name ||\n  (typeof error.node === 'string' ? error.node : null) ||\n  err.node?.name ||\n  execution.lastNodeExecuted ||\n  'unknown';\n\nconst message =\n  pickMessage(error) ||\n  pickMessage(err) ||\n  asText(err.message) ||\n  'unknown_error';\n\nreturn {\n  workflow: err.workflow?.name || err.workflow || 'unknown',\n  execution_id: String(execution.id || err.executionId || ''),\n  node: typeof nodeName === 'string' ? nodeName : 'unknown',\n  message,\n  stack: error.stack || err.stack || '',\n  correlation_id:\n    error.context?.correlation_id ||\n    execution.customData?.correlation_id ||\n    err.correlation_id ||\n    '',\n  retry_suggestion: 'manual',\n  timestamp: new Date().toISOString(),\n  _metadata: { processing_stage: 'global_error_logged', severity: 'critical' },\n};\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -25,7 +25,7 @@
         220,
         0
       ],
-      "id": "bf8ee752-bd7b-47be-81a1-5d7af8b8c2dc",
+      "id": "0737721b-e3b3-49ef-a741-9b865230f280",
       "name": "Extract Error Details",
       "notes": "Normalize n8n error payload.",
       "notesInFlow": true
@@ -41,7 +41,7 @@
         440,
         0
       ],
-      "id": "adfec688-845d-4e2d-8932-260b1d4e0aff",
+      "id": "0337f864-3419-4254-b726-8b8fc3fa47fb",
       "name": "Prepare Error Log Body"
     },
     {
@@ -70,7 +70,7 @@
         660,
         0
       ],
-      "id": "4a212780-5006-4391-9704-b7b3137be04f",
+      "id": "286f1d4d-392a-492c-a4be-07fb37c064ba",
       "name": "Write error_logs",
       "retryOnFail": true,
       "maxTries": 3,
@@ -90,7 +90,7 @@
         660,
         200
       ],
-      "id": "dcbe44aa-8c35-4c60-a6ac-38142aaa6086",
+      "id": "78522eea-12c5-4203-8154-2561f77c44fe",
       "name": "Handle error_logs Write Failure"
     },
     {
@@ -107,7 +107,7 @@
         880,
         0
       ],
-      "id": "c6f90a1e-b2c5-4731-bcc3-f29aac0223ee",
+      "id": "c341115e-08c6-4642-91bc-26251645dc1f",
       "name": "Get Config For Alert",
       "retryOnFail": true,
       "maxTries": 3,
@@ -125,7 +125,7 @@
         880,
         200
       ],
-      "id": "8dd607d1-d14c-4ab9-b568-9eef974d6a29",
+      "id": "84427109-c8bd-4560-8bfe-9d47444d4163",
       "name": "Handle Config HTTP Error",
       "notes": "Config unavailable → still attempt Slack alert",
       "notesInFlow": true
@@ -141,7 +141,7 @@
         1100,
         0
       ],
-      "id": "641036d6-4600-4c04-a00f-29e88c94f4a3",
+      "id": "9dd38803-7ce8-4df4-87ff-a6a911235fbe",
       "name": "Check Error Alert Enabled"
     },
     {
@@ -155,7 +155,7 @@
           },
           "conditions": [
             {
-              "id": "5d0f8cbe-b231-4fd0-8034-d991c65b1574",
+              "id": "6e548481-d98d-4942-af92-96e198570fba",
               "leftValue": "={{ $json.should_alert_slack }}",
               "rightValue": "true",
               "operator": {
@@ -175,7 +175,7 @@
         1320,
         0
       ],
-      "id": "79de6e93-64d4-449d-b949-5a9c1837e3b2",
+      "id": "c70afdea-fd04-45d4-b79d-e63d3b4ec81b",
       "name": "Should Alert Slack?"
     },
     {
@@ -195,7 +195,7 @@
         1540,
         0
       ],
-      "id": "20b146e6-af66-4129-903e-624b7aa7e09f",
+      "id": "3ad53442-70ff-4740-b811-b52b7599cd08",
       "name": "Slack Error Alert",
       "retryOnFail": true,
       "maxTries": 3,
@@ -221,7 +221,7 @@
         1760,
         120
       ],
-      "id": "0de50add-fe8e-493c-adb4-97fa8a9b2189",
+      "id": "9de9a7b9-833b-4aef-a2ee-50eadf5553c2",
       "name": "Log Slack Error"
     },
     {
@@ -232,7 +232,7 @@
         1540,
         200
       ],
-      "id": "55f38bb9-d606-4492-8004-e58ae0c5dd39",
+      "id": "8756fc56-0c5a-4d0d-b8b6-ab81373e1ed8",
       "name": "No Slack Alert"
     }
   ],

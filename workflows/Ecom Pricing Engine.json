@@ -18,7 +18,7 @@
         0,
         0
       ],
-      "id": "a4625ba4-7c15-46ea-b159-c9cbb57a08ff",
+      "id": "ce85d83d-7f26-4831-a5f3-86ee6395c0d3",
       "name": "Pricing Engine Cron",
       "notes": "Periodic inventory reconciliation when webhooks are missed.",
       "notesInFlow": true
@@ -53,35 +53,70 @@
         0,
         160
       ],
-      "id": "f4c9b3b0-4708-4cdf-8b8e-2460188d0f85",
+      "id": "0e694fc4-91f0-476e-8e5f-a4d09d0debe7",
       "name": "When Executed by Another Workflow"
     },
     {
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "\nreturn {\n  store_id: $env.ECOM_DEMO_STORE_ID || '',\n  sku: $env.ECOM_DEMO_PRICING_SKU || 'TEE-BLACK-M',\n  current_price: 89,\n  cost: 35,\n  correlation_id: require('crypto').randomUUID(),\n};\n"
+        "method": "GET",
+        "url": "http://ecom_python_ai:8001/competitors/targets",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        220,
+        0
+      ],
+      "id": "e84eb2bd-33c9-487e-bb46-7b2e26af0ed6",
+      "name": "Load Pricing Targets",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Load pricing targets failed';\n\nreturn { ok: false, store_id: $env.ECOM_DEMO_STORE_ID || '', skus: ['sku-managed-1','SNOWBOARD-LIQUID'], targets_error_message: errorMessage };\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         220,
-        0
+        200
       ],
-      "id": "53a80287-8e0e-4ff9-9780-e52c57e44d80",
-      "name": "Cron Pricing Seed"
+      "id": "e52929d9-4e8a-44bb-afd3-48460c8dc6a8",
+      "name": "Handle Targets HTTP Error"
     },
     {
       "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "\nconst item = $input.item.json || {};\nreturn {\n  store_id: item.store_id || $env.ECOM_DEMO_STORE_ID || '',\n  sku: item.sku || 'TEE-BLACK-M',\n  current_price: item.current_price == null || item.current_price === '' ? null : Number(item.current_price),\n  cost: item.cost == null || item.cost === '' ? null : Number(item.cost),\n  correlation_id: item.correlation_id || require('crypto').randomUUID(),\n};\n"
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst store_id = body.store_id || $env.ECOM_DEMO_STORE_ID || '';\nlet skus = Array.isArray(body.skus) ? body.skus.filter(Boolean) : [];\nif (!skus.length && body.sku) skus = [body.sku];\nif (!skus.length) {\n  const fromTargets = Array.isArray(body.targets)\n    ? [...new Set(body.targets.map((t) => t && t.sku).filter(Boolean))]\n    : [];\n  skus = fromTargets;\n}\nif (!skus.length) skus = ['sku-managed-1', 'SNOWBOARD-LIQUID'];\nreturn skus.map((sku) => ({\n  json: {\n    store_id,\n    sku: String(sku),\n    current_price: null,\n    cost: null,\n    correlation_id: require('crypto').randomUUID(),\n  },\n}));\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         440,
+        0
+      ],
+      "id": "3f4a8ecb-1ea3-4bbc-ac0b-ed89faf8dcad",
+      "name": "Expand Pricing SKUs"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst item = $input.item.json || {};\nreturn {\n  store_id: item.store_id || $env.ECOM_DEMO_STORE_ID || '',\n  sku: item.sku || 'sku-managed-1',\n  current_price: item.current_price == null || item.current_price === '' ? null : Number(item.current_price),\n  cost: item.cost == null || item.cost === '' ? null : Number(item.cost),\n  correlation_id: item.correlation_id || require('crypto').randomUUID(),\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
         80
       ],
-      "id": "a4234449-45cf-4e00-a59e-3505a6bfe873",
+      "id": "7d61beed-efa2-4189-bbd3-a3ebfa04c96c",
       "name": "Prepare Pricing Body"
     },
     {
@@ -107,10 +142,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        660,
+        880,
         80
       ],
-      "id": "d7f94367-05d2-40b1-8ff5-85084f7bb6f3",
+      "id": "b5653140-aa93-42ec-9568-0601586c0289",
       "name": "Sidecar Pricing Recommend",
       "retryOnFail": true,
       "maxTries": 3,
@@ -127,24 +162,24 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        660,
+        880,
         260
       ],
-      "id": "3891769f-40cf-47d0-9097-416eb6e7ff0e",
+      "id": "565de0d2-983f-4d9c-95f9-37e7f70afa0d",
       "name": "Handle Pricing HTTP Error"
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "\nconst prep = $('Prepare Pricing Body').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst recId = body.recommendation_id || '';\nconst sku = body.sku || prep.sku || '';\nconst approveVal = JSON.stringify({ recommendation_id: recId, action: 'approve', sku });\nconst rejectVal = JSON.stringify({ recommendation_id: recId, action: 'reject', sku });\nconst slack_text = `Pricing recommendation for ${sku}: ${body.current_price} → ${body.recommended_price}`;\nconst slack_blocks = {\n  blocks: [\n    { type: 'header', text: { type: 'plain_text', text: 'Pricing recommendation' } },\n    {\n      type: 'section',\n      fields: [\n        { type: 'mrkdwn', text: `*SKU:*\\n${sku}` },\n        { type: 'mrkdwn', text: `*Current → Recommended:*\\n${body.current_price} → ${body.recommended_price}` },\n        { type: 'mrkdwn', text: `*Strategy:*\\n${body.strategy || 'n/a'}` },\n        { type: 'mrkdwn', text: `*Fallback:*\\n${body.fallback_used ? 'yes' : 'no'}` },\n      ],\n    },\n    { type: 'section', text: { type: 'mrkdwn', text: `*Reasoning:*\\n${body.reasoning || 'n/a'}` } },\n    {\n      type: 'actions',\n      elements: [\n        { type: 'button', text: { type: 'plain_text', text: 'Approve' }, style: 'primary', action_id: 'approve_pricing', value: approveVal },\n        { type: 'button', text: { type: 'plain_text', text: 'Reject' }, style: 'danger', action_id: 'reject_pricing', value: rejectVal },\n      ],\n    },\n  ],\n};\nreturn {\n  ...prep,\n  ...body,\n  slack_text,\n  slack_blocks,\n  should_alert_slack: body.should_alert_slack !== false,\n};\n"
+        "jsCode": "\nconst prep = $('Prepare Pricing Body').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst recId = body.recommendation_id || '';\nconst sku = body.sku || prep.sku || '';\nconst title = body.title || sku;\nconst imageUrl = typeof body.image_url === 'string' ? body.image_url.trim() : '';\nconst action = String(body.action || '').toLowerCase();\nconst isHold = action === 'hold' || body.needs_approval === false;\nconst approveVal = JSON.stringify({ recommendation_id: recId, action: 'approve', sku });\nconst rejectVal = JSON.stringify({ recommendation_id: recId, action: 'reject', sku });\n\nlet competitorLine = 'n/a';\nif (body.competitor_price != null && body.competitor_price !== '') {\n  competitorLine = String(body.competitor_price);\n} else if (Array.isArray(body.competitor_prices) && body.competitor_prices.length) {\n  competitorLine = body.competitor_prices\n    .map((c) => (c && c.price != null ? String(c.price) : null))\n    .filter(Boolean)\n    .join(', ');\n}\n\nconst headerText = isHold ? 'Pricing hold (no change)' : 'Pricing recommendation';\nconst slack_text = isHold\n  ? `Pricing hold for ${title} (${sku}): keep ${body.current_price} (competitor ${competitorLine})`\n  : `Pricing recommendation for ${title} (${sku}): ${body.current_price} → ${body.recommended_price}`;\n\nconst mainSection = {\n  type: 'section',\n  text: {\n    type: 'mrkdwn',\n    text: [\n      `*${title}*`,\n      `*SKU:* ${sku}`,\n      `*Competitor:* ${competitorLine}`,\n      `*Current → Recommended:* ${body.current_price} → ${body.recommended_price}`,\n      `*Action:* ${body.action || 'n/a'}`,\n      `*Strategy:* ${body.strategy || 'n/a'}`,\n      `*Fallback:* ${body.fallback_used ? 'yes' : 'no'}`,\n    ].join('\\n'),\n  },\n};\nif (imageUrl && /^https?:\\/\\//i.test(imageUrl)) {\n  mainSection.accessory = {\n    type: 'image',\n    image_url: imageUrl,\n    alt_text: title.slice(0, 100) || sku,\n  };\n}\n\nconst blocks = [\n  { type: 'header', text: { type: 'plain_text', text: headerText } },\n  mainSection,\n  { type: 'section', text: { type: 'mrkdwn', text: `*Reasoning:*\\n${body.reasoning || 'n/a'}` } },\n];\nif (!isHold) {\n  blocks.push({\n    type: 'actions',\n    elements: [\n      { type: 'button', text: { type: 'plain_text', text: 'Approve' }, style: 'primary', action_id: 'approve_pricing', value: approveVal },\n      { type: 'button', text: { type: 'plain_text', text: 'Reject' }, style: 'danger', action_id: 'reject_pricing', value: rejectVal },\n    ],\n  });\n} else {\n  blocks.push({\n    type: 'context',\n    elements: [{ type: 'mrkdwn', text: '_No approval needed — price unchanged._' }],\n  });\n}\n\nconst slack_blocks = { blocks };\nreturn {\n  ...prep,\n  ...body,\n  title,\n  image_url: imageUrl || null,\n  slack_text,\n  slack_blocks,\n  should_alert_slack: body.should_alert_slack !== false,\n};\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        880,
+        1100,
         80
       ],
-      "id": "1c5fb7d6-8a82-413d-aabb-43a9b72c653b",
+      "id": "8e51abb8-3f0d-4a69-a732-5086ef07fe49",
       "name": "Flatten Pricing Result"
     },
     {
@@ -158,7 +193,7 @@
           },
           "conditions": [
             {
-              "id": "c78d281a-c9df-4f7b-8382-2f0dc09bd3db",
+              "id": "8ddef57d-2aa1-40e4-9a9b-7a9a32ce39c4",
               "leftValue": "={{ $json.should_alert_slack }}",
               "rightValue": "true",
               "operator": {
@@ -175,10 +210,10 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1100,
+        1320,
         80
       ],
-      "id": "dacb07ac-a330-4026-8804-086c22b8e909",
+      "id": "976cf887-162a-40fa-a685-5ee4e86e4229",
       "name": "Should Slack Pricing?"
     },
     {
@@ -202,10 +237,10 @@
       "type": "n8n-nodes-base.slack",
       "typeVersion": 2.2,
       "position": [
-        1320,
+        1540,
         0
       ],
-      "id": "d3626c7c-1852-4b66-8e39-aa5fdad32859",
+      "id": "1898f750-7bb5-4809-89b5-8921207802b8",
       "name": "Slack Pricing Approval",
       "retryOnFail": true,
       "maxTries": 3,
@@ -217,7 +252,7 @@
           "name": "Slack ecom bot"
         }
       },
-      "notes": "Bind Slack API credential with Bot User OAuth Token (xoxb-). OAuth2 posts as you.",
+      "notes": "Bind slackApi (xoxb-); avoid OAuth2.",
       "notesInFlow": true
     },
     {
@@ -228,10 +263,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1320,
+        1540,
         200
       ],
-      "id": "fbcddf33-a83a-4ced-92d9-9e42dd24f989",
+      "id": "e9f5bd24-235b-4b8d-8048-39eb579efe83",
       "name": "Log Slack Pricing Error"
     },
     {
@@ -239,10 +274,10 @@
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
       "position": [
-        1320,
+        1540,
         320
       ],
-      "id": "fde829da-d3fa-46a1-a7aa-f2f7ac58dc35",
+      "id": "10c0fd88-73ef-4afe-9f4a-dc76832dc1d8",
       "name": "No Pricing Slack"
     },
     {
@@ -250,10 +285,10 @@
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
       "position": [
-        1540,
+        1760,
         80
       ],
-      "id": "c8116147-6a1d-4452-a562-c294ca5dee62",
+      "id": "07b813ef-31b3-4ea7-bb2a-7c7544aaabc3",
       "name": "Pricing Done"
     }
   ],
@@ -262,14 +297,43 @@
       "main": [
         [
           {
-            "node": "Cron Pricing Seed",
+            "node": "Load Pricing Targets",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Cron Pricing Seed": {
+    "Load Pricing Targets": {
+      "main": [
+        [
+          {
+            "node": "Expand Pricing SKUs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Targets HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Targets HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Expand Pricing SKUs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Pricing SKUs": {
       "main": [
         [
           {

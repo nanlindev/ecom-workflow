@@ -18,6 +18,7 @@ from domain_p1 import (
     decide_return,
     get_config,
     ingest_shopify,
+    ingest_woocommerce,
     inventory_sync,
     track_order,
     write_error_log,
@@ -33,6 +34,7 @@ from domain_p2 import (
     pricing_action,
     recommend_price,
 )
+from domain_p3 import keepalive_check, ops_summary
 from observability import attach_incoming_trace_context, detach_trace_context, get_correlation_id_from_headers
 from prompt_loader import list_prompts, load_prompt
 
@@ -164,6 +166,27 @@ def ingest_shopify_endpoint(body: ShopifyIngestRequest, request: Request):
     )
 
 
+class WooIngestRequest(BaseModel):
+    raw_body: Any = Field(..., description="Webhook raw body string or JSON object")
+    headers: dict[str, Any] = Field(default_factory=dict)
+    store_key: str | None = None
+    correlation_id: str | None = None
+    skip_verify: bool = False
+
+
+@app.post("/ingest/woocommerce")
+def ingest_woocommerce_endpoint(body: WooIngestRequest, request: Request):
+    """Verify Woo signature, normalize to shared schema, return dispatch flags."""
+    corr = body.correlation_id or get_correlation_id_from_headers(request.headers)
+    return ingest_woocommerce(
+        raw_body=body.raw_body,
+        headers=body.headers,
+        store_key=body.store_key,
+        correlation_id=corr,
+        skip_verify=body.skip_verify,
+    )
+
+
 class InventorySyncRequest(BaseModel):
     store_id: str | None = None
     store_key: str | None = None
@@ -236,7 +259,7 @@ def returns_decide_endpoint(body: ReturnDecideRequest, request: Request):
     )
 
 
-# --- P2: competitor / pricing / insights / marketing ---
+# P2 routes
 
 
 class CompetitorParseRequest(BaseModel):
@@ -399,3 +422,34 @@ def errors_log_endpoint(body: ErrorLogRequest):
         store_id=body.store_id,
         detail=body.detail,
     )
+
+
+class OpsSummaryRequest(BaseModel):
+    period: str = "daily"
+    store_id: str | None = None
+    store_key: str | None = None
+    correlation_id: str | None = None
+
+
+@app.post("/ops/summary")
+def ops_summary_endpoint(body: OpsSummaryRequest, request: Request):
+    """Daily/weekly ops digest for Slack-gated Summary workflows."""
+    corr = body.correlation_id or get_correlation_id_from_headers(request.headers)
+    return ops_summary(
+        period=body.period,
+        store_id=body.store_id,
+        store_key=body.store_key,
+        correlation_id=corr,
+    )
+
+
+class KeepaliveRequest(BaseModel):
+    correlation_id: str | None = None
+    ping_channels: bool = True
+
+
+@app.post("/ops/keepalive")
+def keepalive_endpoint(body: KeepaliveRequest, request: Request):
+    """Deep health for Cron keepalive (PG + optional channel pings)."""
+    corr = body.correlation_id or get_correlation_id_from_headers(request.headers)
+    return keepalive_check(correlation_id=corr, ping_channels=body.ping_channels)

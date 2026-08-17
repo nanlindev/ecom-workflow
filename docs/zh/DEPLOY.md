@@ -87,6 +87,9 @@ docker compose -f docker/compose.yml --env-file .env up -d --build
 - `http://ecom_python_ai:8001/health`
 - `http://ecom_python_ai:8001/prompts`
 - （P2）`/competitors/parse`、`/competitors/targets`、`/pricing/recommend`、`/pricing/action`、`/insights/rfm`、`/insights/churn`、`/marketing/copy`、`/marketing/enroll`、`/marketing/advance`
+- （P3）`/ops/summary`、`/ops/keepalive`；Woo 接入 `/ingest/woocommerce`
+
+**P3b live writeback**（可选 `.env`）：`WOO_*`、`SHOPIFY_ADMIN_ACCESS_TOKEN`、`SHOPIFY_LOCATION_ID`。门控：Postgres `config_main.mode=production` + `writeback_enabled`。见 [TEST_PRODUCTION.md](TEST_PRODUCTION.md)。
 
 宿主机映射：**8003 → 8001**。
 

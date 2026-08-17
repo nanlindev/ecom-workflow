@@ -7,4 +7,4 @@ docker compose -f docker/compose.yml --env-file .env up -d --build
 python3 scripts/seed_demo_scenario_a.py
 ```
 
-期望：`TEE-BLACK-M` 库存进 PG；sync 在 test 下 `writeback_status=skipped_test_mode`；订单 `5001` 状态可见；退货 `R-9001` → `manual_review`。
+期望：`sku-managed-1` 库存进 PG；sync 在 test 下 `writeback_status=skipped_test_mode`；订单 `5001` 状态可见；退货 `R-9001` → `manual_review`。

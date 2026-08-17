@@ -51,8 +51,8 @@ def main() -> None:
             },
             "raw_body": {
                 "id": 1001,
-                "sku": "TEE-BLACK-M",
-                "title": "Demo Tee Black M",
+                "sku": "sku-managed-1",
+                "title": "The Multi-managed Snowboard",
                 "available": 42,
                 "inventory_item_id": 9001,
             },
@@ -66,11 +66,11 @@ def main() -> None:
         "/inventory/sync",
         {
             "store_id": store_id,
-            "sku": "TEE-BLACK-M",
+            "sku": "sku-managed-1",
             "correlation_id": corr_inv,
             "slave_levels": [
                 {
-                    "sku": "TEE-BLACK-M",
+                    "sku": "sku-managed-1",
                     "platform": "woocommerce",
                     "available": 40,
                     "location_key": "default",
@@ -106,10 +106,16 @@ def main() -> None:
                 "financial_status": "paid",
                 "fulfillment_status": None,
                 "status": "paid",
-                "total_price": "89.00",
-                "subtotal_price": "89.00",
+                "total_price": "2629.00",
+                "subtotal_price": "2629.00",
                 "line_items": [
-                    {"id": 1, "sku": "TEE-BLACK-M", "title": "Demo Tee Black M", "quantity": 1, "price": "89.00"}
+                    {
+                        "id": 1,
+                        "sku": "sku-managed-1",
+                        "title": "The Multi-managed Snowboard",
+                        "quantity": 1,
+                        "price": "2629.00",
+                    }
                 ],
                 "customer": {"id": 77, "email": "buyer@example.com", "first_name": "Demo"},
             },

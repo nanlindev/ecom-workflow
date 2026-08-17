@@ -1,0 +1,302 @@
+{
+  "name": "Ecom Health Keepalive",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "904748b2-cb8c-492a-9320-babb67c81d98",
+      "name": "Keepalive Cron",
+      "notes": "Every 15m: sidecar keepalive + optional channel pings.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nreturn {\n  correlation_id: require('crypto').randomUUID(),\n  ping_channels: true,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "529a783e-7b66-4a11-b351-cc66372d8e90",
+      "name": "Prepare Keepalive Body"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/ops/keepalive",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ correlation_id: $json.correlation_id, ping_channels: $json.ping_channels }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        440,
+        0
+      ],
+      "id": "5dbf5cda-2a0f-4601-bada-f37bd182548b",
+      "name": "Sidecar Keepalive",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "PG ping + optional Woo/Shopify Admin light ping.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Keepalive sidecar failed';\n\nreturn {\n  ok: false,\n  should_alert_slack: true,\n  keepalive_error_message: errorMessage,\n  slack_text: `🚨 Ecom Keepalive HTTP failed: ${errorMessage}`,\n  _metadata: { processing_stage: 'keepalive_failed', severity: 'critical' },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ],
+      "id": "b9c9626e-7424-49e8-b9a4-2dd7477b1229",
+      "name": "Handle Keepalive HTTP Error"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nreturn {\n  ...body,\n  should_alert_slack: body.should_alert_slack === true,\n  slack_text: body.slack_text || 'Ecom keepalive ok',\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "id": "812546b0-8ea7-4ff3-91d2-10dedda5df7f",
+      "name": "Flatten Keepalive Result"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3e0788da-617e-4b13-b319-da7ccb858dc3",
+              "leftValue": "={{ $json.should_alert_slack }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "c8510a9e-509b-43e0-8ef8-d62febb92353",
+      "name": "Should Alert Keepalive?"
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_ECOM_CHANNEL_ID || 'SLACK_ECOM_CHANNEL_ID' }}"
+        },
+        "text": "={{ $json.slack_text }}"
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        -80
+      ],
+      "id": "418a8640-73c6-4d96-b271-8b3e8e5121be",
+      "name": "Slack Keepalive Alert",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_BOT_CREDENTIAL_ID",
+          "name": "Slack ecom bot"
+        }
+      },
+      "notes": "Bind Slack API Access Token = Bot User OAuth Token (xoxb-). Do not use OAuth2.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Slack keepalive alert failed';\n\nconst prev = $('Flatten Keepalive Result').item.json;\nreturn { ...prev, slack_failed: true, slack_error_message: errorMessage };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        40
+      ],
+      "id": "43a611a4-5467-4d72-b118-d59a9b3a8576",
+      "name": "Log Slack Keepalive Error"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        160
+      ],
+      "id": "6f084bb7-1b5e-42d5-836e-ab196561d8ca",
+      "name": "Keepalive Healthy"
+    }
+  ],
+  "connections": {
+    "Keepalive Cron": {
+      "main": [
+        [
+          {
+            "node": "Prepare Keepalive Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Keepalive Body": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Keepalive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Keepalive": {
+      "main": [
+        [
+          {
+            "node": "Flatten Keepalive Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Keepalive HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Keepalive HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Flatten Keepalive Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Keepalive Result": {
+      "main": [
+        [
+          {
+            "node": "Should Alert Keepalive?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Alert Keepalive?": {
+      "main": [
+        [
+          {
+            "node": "Slack Keepalive Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Keepalive Healthy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Keepalive Alert": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Log Slack Keepalive Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Ecom Error Handler"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

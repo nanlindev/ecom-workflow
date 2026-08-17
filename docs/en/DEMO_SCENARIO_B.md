@@ -28,8 +28,8 @@ ECOM_DEMO_STORE_ID=... python3 scripts/seed_demo_scenario_b.py
 
 Expect:
 
-- Competitor snapshot price ~84 (or LLM parse)
-- `pricing_recommendations` row `pending` with recommended price; `should_alert_slack=true`
+- Competitor snapshots for `sku-managed-1` (~2499) and `SNOWBOARD-LIQUID` (~3899), or LLM parse of the same HTML
+- `pricing_recommendations` rows (`pending` undercut / `held` when competitor is higher); Slack when actionable
 - RFM/churn customer updates
 - Abandon enrollment created; advance → `send_status=skipped_test_mode` (no real email)
 
@@ -39,6 +39,6 @@ Execute **Ecom Pricing Engine** (or wait Cron) → Slack Block Kit with Approve 
 
 ## Acceptance
 
-- [ ] Recommended price appears in Slack
+- [ ] Recommended price / hold appears in Slack
 - [ ] Approve/Reject updates `pricing_recommendations.status`
-- [ ] test mode: marketing enrollment written, no SendGrid send
+- [ ] test mode: marketing enrollment written, no Resend send

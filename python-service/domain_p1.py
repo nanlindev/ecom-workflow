@@ -150,6 +150,37 @@ def write_error_log(
             return {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
 
 
+def _parse_body(raw_body: Any) -> dict[str, Any]:
+    if isinstance(raw_body, dict):
+        return raw_body
+    if isinstance(raw_body, (bytes, bytearray)):
+        raw_body = raw_body.decode("utf-8", errors="replace")
+    if isinstance(raw_body, str):
+        text = raw_body.strip()
+        if not text:
+            return {}
+        if text.startswith("{") or text.startswith("["):
+            return json.loads(text)
+        # Woo Hookshot ping uses application/x-www-form-urlencoded (webhook_id=…).
+        if "=" in text and not text.startswith("<"):
+            from urllib.parse import parse_qs
+
+            parsed = parse_qs(text, keep_blank_values=True)
+            return {k: (v[0] if len(v) == 1 else v) for k, v in parsed.items()}
+        return {}
+    return {}
+
+
+def _is_woo_webhook_ping(payload: dict[str, Any], headers: dict[str, Any]) -> bool:
+    """True for WooCommerce Hookshot connectivity pings (not product/order events)."""
+    if headers.get("x-wc-webhook-topic") or headers.get("x-shopify-topic"):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    keys = {k for k in payload.keys() if not str(k).startswith("_")}
+    return "webhook_id" in keys and keys <= {"webhook_id"}
+
+
 def verify_shopify_hmac(raw_body: bytes | str, hmac_header: str | None) -> dict[str, Any]:
     """Verify X-Shopify-Hmac-Sha256. Empty secret skips (dev/demo)."""
     secret = os.getenv("SHOPIFY_WEBHOOK_SECRET", "").strip()
@@ -162,16 +193,6 @@ def verify_shopify_hmac(raw_body: bytes | str, hmac_header: str | None) -> dict[
     if hmac.compare_digest(digest, hmac_header.strip()):
         return {"valid": True, "skipped": False, "reason": "ok"}
     return {"valid": False, "skipped": False, "reason": "signature_mismatch"}
-
-
-def _parse_body(raw_body: Any) -> dict[str, Any]:
-    if isinstance(raw_body, dict):
-        return raw_body
-    if isinstance(raw_body, (bytes, bytearray)):
-        raw_body = raw_body.decode("utf-8", errors="replace")
-    if isinstance(raw_body, str):
-        return json.loads(raw_body) if raw_body.strip() else {}
-    return {}
 
 
 def ingest_shopify(
@@ -267,6 +288,539 @@ def ingest_shopify(
         "event_type": event_type,
         "entities": entities,
         "dispatch": dispatch,
+    }
+
+
+def verify_woo_signature(raw_body: bytes | str, signature_header: str | None) -> dict[str, Any]:
+    """Verify X-WC-Webhook-Signature (HMAC-SHA256 base64). Empty secret skips (dev/demo)."""
+    secret = os.getenv("WOO_WEBHOOK_SECRET", "").strip()
+    if not secret:
+        return {"valid": True, "skipped": True, "reason": "verification_skipped"}
+    if not signature_header:
+        return {"valid": False, "skipped": False, "reason": "missing_signature"}
+    body = raw_body.encode("utf-8") if isinstance(raw_body, str) else raw_body
+    digest = base64.b64encode(hmac.new(secret.encode("utf-8"), body, hashlib.sha256).digest()).decode()
+    if hmac.compare_digest(digest, signature_header.strip()):
+        return {"valid": True, "skipped": False, "reason": "ok"}
+    return {"valid": False, "skipped": False, "reason": "signature_mismatch"}
+
+
+def ingest_woocommerce(
+    *,
+    raw_body: Any,
+    headers: dict[str, Any] | None = None,
+    store_key: str | None = None,
+    correlation_id: str | None = None,
+    skip_verify: bool = False,
+) -> dict[str, Any]:
+    """Verify Woo webhook, normalize to same internal schema as Shopify, return dispatch hints."""
+    headers = {str(k).lower(): v for k, v in (headers or {}).items()}
+    sig = headers.get("x-wc-webhook-signature")
+    topic = headers.get("x-wc-webhook-topic") or headers.get("x-wc-webhook-resource") or ""
+    source = headers.get("x-wc-webhook-source") or ""
+
+    body_bytes: bytes | str
+    if isinstance(raw_body, (bytes, bytearray)):
+        body_bytes = bytes(raw_body)
+        payload = _parse_body(body_bytes)
+    elif isinstance(raw_body, str):
+        body_bytes = raw_body
+        payload = _parse_body(raw_body)
+    else:
+        payload = raw_body if isinstance(raw_body, dict) else {}
+        body_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+    # Hookshot connectivity ping — ack without HMAC / upsert (no business topic headers).
+    if _is_woo_webhook_ping(payload, headers):
+        corr = correlation_id or headers.get("x-correlation-id") or _uuid()
+        write_audit(
+            action="woo_webhook_ping",
+            correlation_id=corr,
+            detail={"webhook_id": payload.get("webhook_id"), "platform": "woocommerce"},
+        )
+        return {
+            "ok": True,
+            "signature_valid": True,
+            "verify": {"valid": True, "skipped": True, "reason": "woo_hookshot_ping"},
+            "http_status": 200,
+            "correlation_id": corr,
+            "store_id": None,
+            "store_key": store_key,
+            "platform": "woocommerce",
+            "topic": "ping",
+            "event_type": "ping",
+            "entities": {"webhook_id": payload.get("webhook_id")},
+            "dispatch": {"inventory": False, "order": False, "returns": False},
+        }
+
+    verify = (
+        {"valid": True, "skipped": True, "reason": "skip_verify_flag"}
+        if skip_verify
+        else verify_woo_signature(body_bytes, sig)
+    )
+    if not verify["valid"]:
+        write_audit(
+            action="webhook_signature_rejected",
+            detail={"platform": "woocommerce", "reason": verify.get("reason"), "topic": topic},
+        )
+        return {
+            "ok": False,
+            "signature_valid": False,
+            "verify": verify,
+            "http_status": 401,
+        }
+
+    corr = correlation_id or headers.get("x-correlation-id") or _uuid()
+    # Shared store_key with Shopify for multi-channel SoT; channel is on listings/inventory_levels.
+    key = store_key or _cfg(get_config()["flat"], "demo_store_key", "demo-shopify")
+    store = ensure_store(store_key=key, platform="woocommerce", external_shop_id=source or None)
+    store_id = str(store["id"])
+
+    topic_l = (topic or payload.get("_topic") or "").lower()
+    event_type = _classify_woo_topic(topic_l, payload)
+    entities: dict[str, Any] = {}
+    order_shaped_return = event_type == "return" and _woo_payload_is_order_shape(payload)
+
+    if event_type in {"inventory", "product"}:
+        entities = _upsert_woo_product(store_id, payload, topic_l, corr)
+    elif event_type == "order":
+        entities = _upsert_woo_order(store_id, payload, corr)
+    elif event_type == "return":
+        if order_shaped_return:
+            order_entities = _upsert_woo_order(store_id, payload, corr)
+            entities = _upsert_woo_return_stub(store_id, payload, corr)
+            entities["order_id"] = order_entities.get("primary_id")
+            entities["external_order_id"] = order_entities.get("external_order_id")
+            entities["order_upserted"] = True
+        else:
+            entities = _upsert_woo_return_stub(store_id, payload, corr)
+    else:
+        write_audit(
+            action="ingest_unhandled_topic",
+            store_id=store_id,
+            correlation_id=corr,
+            detail={"platform": "woocommerce", "topic": topic_l, "keys": list(payload.keys())[:20]},
+        )
+        event_type = "unknown"
+
+    write_audit(
+        action="ingest_upserted",
+        store_id=store_id,
+        correlation_id=corr,
+        entity_type=event_type,
+        entity_id=entities.get("primary_id"),
+        detail={"platform": "woocommerce", "topic": topic_l, "entities": {k: v for k, v in entities.items() if k != "raw"}},
+    )
+
+    dispatch = {
+        "inventory": event_type in {"inventory", "product"},
+        # Also run Order Tracker when refund arrived via order.updated payload.
+        "order": event_type == "order" or order_shaped_return,
+        "returns": event_type == "return",
+    }
+    return {
+        "ok": True,
+        "signature_valid": True,
+        "verify": verify,
+        "http_status": 200,
+        "correlation_id": corr,
+        "store_id": store_id,
+        "store_key": key,
+        "platform": "woocommerce",
+        "topic": topic_l,
+        "event_type": event_type,
+        "entities": entities,
+        "dispatch": dispatch,
+    }
+
+
+def _woo_payload_is_order_shape(payload: dict[str, Any]) -> bool:
+    """True when body looks like REST Order (webhook order.*), not Order Refunds resource."""
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("order_key") or payload.get("number") is not None:
+        return True
+    if payload.get("billing") or payload.get("shipping"):
+        return True
+    if payload.get("order_id") and payload.get("amount") is not None and not payload.get("status"):
+        return False
+    if payload.get("line_items") and payload.get("status") is not None:
+        return True
+    return False
+
+
+def _woo_latest_refund_entry(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Pick newest entry from Order.refunds[] (REST order shape)."""
+    refunds = payload.get("refunds")
+    if not isinstance(refunds, list) or not refunds:
+        return None
+    entries = [r for r in refunds if isinstance(r, dict)]
+    if not entries:
+        return None
+
+    def _sort_key(r: dict[str, Any]) -> int:
+        try:
+            return int(r.get("id") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return max(entries, key=_sort_key)
+
+
+def _woo_payload_indicates_refund(payload: dict[str, Any]) -> bool:
+    """Detect refund intent on an Order webhook body (core has no dedicated refunds webhook)."""
+    if not isinstance(payload, dict):
+        return False
+    status = str(payload.get("status") or "").lower().replace("_", "-")
+    if status in {"refunded", "partially-refunded"}:
+        return True
+    if _woo_latest_refund_entry(payload):
+        return True
+    # Some builds expose aggregate refunded total on the order.
+    try:
+        if float(payload.get("refunded_total") or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def _classify_woo_topic(topic: str, payload: dict[str, Any]) -> str:
+    t = topic.lower()
+    if "refund" in t or "return" in t:
+        return "return"
+    if "order" in t:
+        if _woo_payload_indicates_refund(payload):
+            return "return"
+        return "order"
+    if "product" in t or "stock" in t:
+        return "product"
+    if _woo_payload_indicates_refund(payload) and _woo_payload_is_order_shape(payload):
+        return "return"
+    if payload.get("line_items") or payload.get("number") or payload.get("order_key"):
+        if _woo_payload_indicates_refund(payload):
+            return "return"
+        return "order"
+    if payload.get("amount") is not None and (payload.get("reason") is not None or payload.get("order_id")):
+        return "return"
+    if payload.get("sku") is not None or payload.get("stock_quantity") is not None or payload.get("variations"):
+        return "product"
+    return "unknown"
+
+
+def _upsert_woo_product(
+    store_id: str,
+    payload: dict[str, Any],
+    topic: str,
+    correlation_id: str,
+) -> dict[str, Any]:
+    """Upsert Woo product/variation into products + listings + inventory_levels (platform=woocommerce)."""
+    # Variations webhook may nest; simple products use top-level sku/stock_quantity.
+    sku = (
+        payload.get("sku")
+        or _first_woo_variation_sku(payload)
+        or f"woo-{payload.get('id') or 'unknown'}"
+    )
+    title = payload.get("name") or payload.get("title") or sku
+    available = payload.get("stock_quantity")
+    if available is None:
+        available = sum(
+            int(v.get("stock_quantity") or 0)
+            for v in (payload.get("variations") or [])
+            if isinstance(v, dict)
+        )
+    if available is None:
+        available = 0
+    external_id = str(payload.get("id") or sku)
+
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO products (store_id, sku, title, raw, updated_at)
+                VALUES (%s, %s, %s, %s::jsonb, NOW())
+                ON CONFLICT (store_id, sku) DO UPDATE SET
+                    title = COALESCE(EXCLUDED.title, products.title),
+                    raw = EXCLUDED.raw,
+                    updated_at = NOW()
+                RETURNING id
+                """,
+                (store_id, sku, title, json.dumps(payload)),
+            )
+            product_id = str(cur.fetchone()["id"])
+
+            cur.execute(
+                """
+                INSERT INTO listings (store_id, platform, external_id, sku, product_id, raw, updated_at)
+                VALUES (%s, 'woocommerce', %s, %s, %s, %s::jsonb, NOW())
+                ON CONFLICT (store_id, platform, external_id) DO UPDATE SET
+                    sku = EXCLUDED.sku,
+                    product_id = EXCLUDED.product_id,
+                    raw = EXCLUDED.raw,
+                    updated_at = NOW()
+                RETURNING id
+                """,
+                (store_id, external_id, sku, product_id, json.dumps(payload)),
+            )
+            listing_id = str(cur.fetchone()["id"])
+
+            cur.execute(
+                """
+                INSERT INTO inventory_levels (
+                    store_id, sku, platform, location_key, available, last_synced_at, raw, updated_at
+                )
+                VALUES (%s, %s, 'woocommerce', 'default', %s, NOW(), %s::jsonb, NOW())
+                ON CONFLICT (store_id, sku, platform, location_key) DO UPDATE SET
+                    available = EXCLUDED.available,
+                    last_synced_at = NOW(),
+                    raw = EXCLUDED.raw,
+                    updated_at = NOW()
+                RETURNING id, available
+                """,
+                (store_id, sku, int(available), json.dumps(payload)),
+            )
+            inv = cur.fetchone()
+
+    return {
+        "primary_id": str(inv["id"]),
+        "product_id": product_id,
+        "listing_id": listing_id,
+        "sku": sku,
+        "available": int(inv["available"]),
+        "correlation_id": correlation_id,
+        "topic": topic,
+        "external_product_id": external_id,
+    }
+
+
+def _first_woo_variation_sku(payload: dict[str, Any]) -> str | None:
+    variations = payload.get("variations") or []
+    for v in variations:
+        if isinstance(v, dict) and v.get("sku"):
+            return str(v["sku"])
+    return None
+
+
+def _upsert_woo_order(store_id: str, payload: dict[str, Any], correlation_id: str) -> dict[str, Any]:
+    external_order_id = str(payload.get("id") or payload.get("number") or _uuid())
+    status = str(payload.get("status") or "open")
+    email = (payload.get("billing") or {}).get("email") or payload.get("email")
+    email = (email or "").lower() or None
+    currency = payload.get("currency") or "USD"
+    totals = {
+        "total_price": payload.get("total"),
+        "subtotal_price": payload.get("subtotal") or payload.get("total"),
+        "total_tax": payload.get("total_tax"),
+    }
+    line_items = payload.get("line_items") or []
+    ordered_at = payload.get("date_created_gmt") or payload.get("date_created")
+
+    with connect() as conn:
+        with conn.cursor() as cur:
+            if email:
+                cur.execute(
+                    """
+                    INSERT INTO customers (store_id, email, raw, updated_at)
+                    VALUES (%s, %s, %s::jsonb, NOW())
+                    ON CONFLICT (store_id, email) DO UPDATE SET updated_at = NOW()
+                    RETURNING id
+                    """,
+                    (store_id, email, json.dumps({"source": "woocommerce_order"})),
+                )
+                cur.fetchone()
+
+            cur.execute(
+                """
+                INSERT INTO orders (
+                    store_id, correlation_id, platform, external_order_id, status,
+                    fulfillment_status, financial_status, customer_email, currency,
+                    totals, line_items, raw, ordered_at, updated_at
+                )
+                VALUES (
+                    %s, %s::uuid, 'woocommerce', %s, %s,
+                    %s, %s, %s, %s,
+                    %s::jsonb, %s::jsonb, %s::jsonb,
+                    COALESCE(%s::timestamptz, NOW()), NOW()
+                )
+                ON CONFLICT (store_id, platform, external_order_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    financial_status = EXCLUDED.financial_status,
+                    customer_email = COALESCE(EXCLUDED.customer_email, orders.customer_email),
+                    totals = EXCLUDED.totals,
+                    line_items = EXCLUDED.line_items,
+                    raw = EXCLUDED.raw,
+                    correlation_id = COALESCE(EXCLUDED.correlation_id, orders.correlation_id),
+                    updated_at = NOW()
+                RETURNING id
+                """,
+                (
+                    store_id,
+                    correlation_id,
+                    external_order_id,
+                    status,
+                    None,
+                    status,
+                    email,
+                    currency,
+                    json.dumps(totals),
+                    json.dumps(line_items),
+                    json.dumps(payload),
+                    ordered_at,
+                ),
+            )
+            order_id = str(cur.fetchone()["id"])
+            for li in line_items:
+                if not isinstance(li, dict):
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO order_items (
+                        order_id, store_id, sku, external_line_id, title, quantity, unit_price, raw
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT (order_id, external_line_id) DO UPDATE SET
+                        quantity = EXCLUDED.quantity,
+                        unit_price = EXCLUDED.unit_price,
+                        raw = EXCLUDED.raw
+                    """,
+                    (
+                        order_id,
+                        store_id,
+                        li.get("sku"),
+                        str(li.get("id") or li.get("product_id") or _uuid()),
+                        li.get("name"),
+                        int(li.get("quantity") or 1),
+                        li.get("price"),
+                        json.dumps(li),
+                    ),
+                )
+
+    return {
+        "primary_id": order_id,
+        "external_order_id": external_order_id,
+        "status": status,
+        "correlation_id": correlation_id,
+    }
+
+
+def _upsert_woo_return_stub(store_id: str, payload: dict[str, Any], correlation_id: str) -> dict[str, Any]:
+    """Map Woo refund into returns table.
+
+    Supports:
+    - Order webhook body (order.updated): status=refunded and/or refunds[] (same as REST Order)
+    - Order Refunds resource body (REST /orders/<id>/refunds): amount, reason, order_id
+    """
+    refund_entry = _woo_latest_refund_entry(payload)
+    order_shaped = _woo_payload_is_order_shape(payload)
+
+    if order_shaped:
+        order_ext = str(payload.get("id") or payload.get("number") or "")
+        if refund_entry:
+            external_return_id = str(
+                refund_entry.get("id") or f"woo-refund-{order_ext}-{refund_entry.get('total')}"
+            )
+            try:
+                amount = float(refund_entry.get("total") or refund_entry.get("amount") or 0)
+            except (TypeError, ValueError):
+                amount = 0.0
+            reason = (
+                refund_entry.get("reason")
+                or payload.get("customer_note")
+                or "woocommerce_order_refund"
+            )
+        else:
+            external_return_id = f"woo-order-refunded-{order_ext or _uuid()}"
+            try:
+                amount = float(
+                    payload.get("refunded_total")
+                    or payload.get("total")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                amount = 0.0
+            reason = payload.get("customer_note") or f"woocommerce_status_{payload.get('status')}"
+        currency = payload.get("currency") or "USD"
+    else:
+        order_ext = payload.get("order_id") or (payload.get("meta") or {}).get("order_id")
+        order_ext = str(order_ext) if order_ext is not None else ""
+        external_return_id = str(payload.get("id") or payload.get("refund_id") or _uuid())
+        try:
+            amount = float(payload.get("amount") or payload.get("total") or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        reason = payload.get("reason") or "woocommerce_refund"
+        currency = payload.get("currency") or "USD"
+
+    with connect() as conn:
+        with conn.cursor() as cur:
+            linked_order_id = None
+            if order_ext:
+                cur.execute(
+                    """
+                    SELECT id FROM orders
+                    WHERE store_id = %s AND platform = 'woocommerce' AND external_order_id = %s
+                    """,
+                    (store_id, str(order_ext)),
+                )
+                found = cur.fetchone()
+                if found:
+                    linked_order_id = str(found["id"])
+
+            cur.execute(
+                "SELECT id FROM returns WHERE store_id = %s AND external_return_id = %s",
+                (store_id, external_return_id),
+            )
+            existing = cur.fetchone()
+            if existing:
+                cur.execute(
+                    """
+                    UPDATE returns
+                    SET amount = %s, reason = COALESCE(%s, reason), raw = %s::jsonb,
+                        order_id = COALESCE(%s, order_id),
+                        correlation_id = COALESCE(%s, correlation_id), updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING id
+                    """,
+                    (
+                        amount,
+                        reason,
+                        json.dumps(payload),
+                        linked_order_id,
+                        correlation_id,
+                        existing["id"],
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO returns (
+                        store_id, order_id, external_return_id, decision, amount, currency, reason,
+                        status, correlation_id, raw, updated_at
+                    )
+                    VALUES (%s, %s, %s, 'pending', %s, %s, %s, 'open', %s, %s::jsonb, NOW())
+                    RETURNING id
+                    """,
+                    (
+                        store_id,
+                        linked_order_id,
+                        external_return_id,
+                        amount,
+                        currency,
+                        reason,
+                        correlation_id,
+                        json.dumps(payload),
+                    ),
+                )
+            rid = str(cur.fetchone()["id"])
+
+    return {
+        "primary_id": rid,
+        "external_return_id": external_return_id,
+        "external_order_id": order_ext or None,
+        "amount": amount,
+        "reason": reason,
+        "correlation_id": correlation_id,
+        "source_shape": "order" if order_shaped else "refund_resource",
     }
 
 
@@ -670,35 +1224,56 @@ def inventory_sync(
                 )
 
     writeback_status = "none"
+    channel_writebacks: list[dict[str, Any]] = []
     if writebacks:
         if mode != "production" or not _truthy(cfg["flat"].get("writeback_enabled", "true")):
             writeback_status = "skipped_test_mode" if mode != "production" else "skipped_disabled"
         else:
-            # Production: align slave rows in SoT (simulates successful channel writeback for demo).
-            with connect() as conn:
-                with conn.cursor() as cur:
-                    for wb in writebacks:
-                        cur.execute(
-                            """
-                            INSERT INTO inventory_levels (
-                                store_id, sku, platform, location_key, available, last_synced_at, raw, updated_at
-                            )
-                            VALUES (%s, %s, %s, 'default', %s, NOW(), %s::jsonb, NOW())
-                            ON CONFLICT (store_id, sku, platform, location_key) DO UPDATE SET
-                                available = EXCLUDED.available,
-                                last_synced_at = NOW(),
-                                updated_at = NOW()
-                            """,
-                            (
-                                store_id,
-                                wb["sku"],
-                                wb["slave_channel"],
-                                wb["target_available"],
-                                json.dumps({"source": "master_writeback", "correlation_id": corr}),
-                            ),
-                        )
-                        applied_writebacks.append(wb)
-            writeback_status = "applied"
+            # Live channel writeback when credentials present; then align SoT.
+            align_sot = _truthy(cfg["flat"].get("writeback_align_sot", "true"))
+            for wb in writebacks:
+                live = _apply_live_inventory_writeback(
+                    store_id=store_id,
+                    channel=wb["slave_channel"],
+                    sku=wb["sku"],
+                    target_available=int(wb["target_available"]),
+                    correlation_id=corr,
+                )
+                channel_writebacks.append({**wb, **live})
+                sot_ok = False
+                if align_sot and live.get("live_status") in {"ok", "skipped_no_credentials", "sot_only"}:
+                    sot_ok = _align_inventory_sot(
+                        store_id=store_id,
+                        sku=wb["sku"],
+                        platform=wb["slave_channel"],
+                        available=int(wb["target_available"]),
+                        correlation_id=corr,
+                        live=live,
+                    )
+                elif live.get("live_status") == "ok":
+                    sot_ok = _align_inventory_sot(
+                        store_id=store_id,
+                        sku=wb["sku"],
+                        platform=wb["slave_channel"],
+                        available=int(wb["target_available"]),
+                        correlation_id=corr,
+                        live=live,
+                    )
+                channel_writebacks[-1]["sot_aligned"] = sot_ok
+                if sot_ok or live.get("live_status") == "ok":
+                    applied_writebacks.append({**wb, **live, "sot_aligned": sot_ok})
+
+            live_statuses = [c.get("live_status") for c in channel_writebacks]
+            if any(s == "ok" for s in live_statuses) and all(
+                s in {"ok", "skipped_no_credentials", "sot_only"} for s in live_statuses
+            ):
+                writeback_status = "applied" if any(s == "ok" for s in live_statuses) else "applied_sot_only"
+            elif any(s == "ok" for s in live_statuses):
+                writeback_status = "partial"
+            elif all(s in {"skipped_no_credentials", "sot_only"} for s in live_statuses):
+                writeback_status = "applied_sot_only"
+            else:
+                writeback_status = "failed" if any(s == "error" for s in live_statuses) else "applied_sot_only"
 
     slack_gate = (
         bool(drifts)
@@ -715,6 +1290,7 @@ def inventory_sync(
             "mode": mode,
             "drift_count": len(drifts),
             "writeback_status": writeback_status,
+            "channel_writebacks": channel_writebacks,
             "sku_filter": sku,
         },
     )
@@ -730,12 +1306,139 @@ def inventory_sync(
         "has_drift": len(drifts) > 0,
         "writebacks": writebacks,
         "writeback_status": writeback_status,
+        "channel_writebacks": channel_writebacks,
         "applied_writebacks": applied_writebacks,
         "should_alert_slack": slack_gate,
     }
 
 
-# Order status machine (simplified)
+def _lookup_listing_raw(store_id: str, platform: str, sku: str) -> dict[str, Any]:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT external_id, raw FROM listings
+                WHERE store_id = %s AND platform = %s AND sku = %s
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (store_id, platform, sku),
+            )
+            row = cur.fetchone()
+            if not row:
+                cur.execute(
+                    """
+                    SELECT available, raw FROM inventory_levels
+                    WHERE store_id = %s AND platform = %s AND sku = %s
+                    ORDER BY updated_at DESC LIMIT 1
+                    """,
+                    (store_id, platform, sku),
+                )
+                inv = cur.fetchone()
+                return {"external_id": None, "raw": dict(inv["raw"] or {}) if inv else {}}
+            return {"external_id": row["external_id"], "raw": dict(row["raw"] or {})}
+
+
+def _align_inventory_sot(
+    *,
+    store_id: str,
+    sku: str,
+    platform: str,
+    available: int,
+    correlation_id: str,
+    live: dict[str, Any],
+) -> bool:
+    try:
+        with connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO inventory_levels (
+                        store_id, sku, platform, location_key, available, last_synced_at, raw, updated_at
+                    )
+                    VALUES (%s, %s, %s, 'default', %s, NOW(), %s::jsonb, NOW())
+                    ON CONFLICT (store_id, sku, platform, location_key) DO UPDATE SET
+                        available = EXCLUDED.available,
+                        last_synced_at = NOW(),
+                        raw = EXCLUDED.raw,
+                        updated_at = NOW()
+                    """,
+                    (
+                        store_id,
+                        sku,
+                        platform,
+                        available,
+                        json.dumps(
+                            {
+                                "source": "master_writeback",
+                                "correlation_id": correlation_id,
+                                "live_status": live.get("live_status"),
+                                "live": {k: v for k, v in live.items() if k != "raw"},
+                            }
+                        ),
+                    ),
+                )
+        return True
+    except Exception:
+        logger.exception("SoT inventory align failed sku=%s platform=%s", sku, platform)
+        return False
+
+
+def _apply_live_inventory_writeback(
+    *,
+    store_id: str,
+    channel: str,
+    sku: str,
+    target_available: int,
+    correlation_id: str,
+) -> dict[str, Any]:
+    """Push master qty to a live slave channel API when credentials exist."""
+    _ = correlation_id
+    channel_l = (channel or "").lower()
+    listing = _lookup_listing_raw(store_id, channel_l, sku)
+
+    if channel_l in {"woocommerce", "woo"}:
+        from channels.woocommerce import WooCommerceClient
+
+        client = WooCommerceClient()
+        if not client.configured:
+            return {"live_status": "skipped_no_credentials", "channel": channel_l}
+        result = client.set_stock_by_sku(
+            sku,
+            target_available,
+            product_id=listing.get("external_id"),
+        )
+        result["channel"] = channel_l
+        return result
+
+    if channel_l == "shopify":
+        from channels.shopify_admin import (
+            ShopifyAdminClient,
+            extract_shopify_inventory_ids,
+        )
+
+        client = ShopifyAdminClient()
+        if not client.configured:
+            return {"live_status": "skipped_no_credentials", "channel": channel_l}
+        ids = extract_shopify_inventory_ids(listing.get("raw") or {})
+        item_id = ids.get("inventory_item_id")
+        if not item_id:
+            return {
+                "live_status": "error",
+                "channel": channel_l,
+                "error": "missing_inventory_item_id_in_listing_raw",
+            }
+        result = client.set_inventory_available(
+            inventory_item_id=item_id,
+            available=target_available,
+            location_id=ids.get("location_id"),
+        )
+        result["channel"] = channel_l
+        return result
+
+    return {"live_status": "sot_only", "channel": channel_l, "error": "unsupported_channel"}
+
+
+# Allowed order status transitions
 _ORDER_TRANSITIONS = {
     "open": {"paid", "cancelled", "fulfilled", "partially_fulfilled", "on_hold"},
     "paid": {"fulfilled", "partially_fulfilled", "refunded", "cancelled"},
@@ -784,7 +1487,7 @@ def track_order(
 
             if new_status and new_status != previous:
                 allowed = _ORDER_TRANSITIONS.get(previous, set())
-                # Also allow same-status refresh and unknown→any for messy platform data
+                # Allow unknown/empty previous → any status.
                 if new_status not in allowed and previous not in {"unknown", ""}:
                     transition_ok = False
                     anomaly_reasons.append(f"illegal_transition:{previous}->{new_status}")
@@ -800,7 +1503,6 @@ def track_order(
                     )
                     order = cur.fetchone()
 
-            # Anomaly heuristics
             totals = order["totals"] if isinstance(order["totals"], dict) else {}
             try:
                 total_price = float(totals.get("total_price") or 0)
@@ -864,10 +1566,7 @@ def _shop_handle_from_domain(shop_domain: str | None) -> str:
 
 
 def shopify_admin_order_url(*, shop_domain: str | None, shopify_order_id: str | None) -> str | None:
-    """Merchant deep-link into Shopify Admin (order detail — process refund/return there).
-
-    Prefer admin.shopify.com/store/{handle}/orders/{id}. No Slack approve/reject — ops in Shopify.
-    """
+    """Build Shopify Admin order URL from shop handle + order id."""
     handle = _shop_handle_from_domain(shop_domain) or os.getenv("SHOPIFY_STORE_HANDLE", "").strip()
     oid = str(shopify_order_id or "").strip()
     if not handle:
@@ -1075,6 +1774,6 @@ def decide_return(
         "merchant_action": "open_in_shopify",
         "needs_manual_review": needs_review,
         "should_alert_slack": slack_gate,
-        # test mode still writes PG; no external refund call / Slack approve buttons
+        # test: PG only; production: pending_provider (no Slack approve/reject)
         "external_refund_status": "skipped_test_mode" if mode != "production" else "pending_provider",
     }

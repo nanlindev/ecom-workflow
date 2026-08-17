@@ -29,7 +29,7 @@
         0,
         0
       ],
-      "id": "b032c71e-7763-44bd-a0fe-1e5c8f153c1e",
+      "id": "c3833349-cdc5-4b90-b9b7-6d1f201838ae",
       "name": "When Executed by Another Workflow"
     },
     {
@@ -43,7 +43,7 @@
         220,
         0
       ],
-      "id": "dbe754cd-1436-4ef0-83b6-59b9172325bd",
+      "id": "19ac49ea-3085-4d61-9455-f1c519cd4264",
       "name": "Prepare Order Track Body"
     },
     {
@@ -72,7 +72,7 @@
         440,
         0
       ],
-      "id": "4f6bc4b9-5bb9-43ea-861e-186619b376a3",
+      "id": "71f81ce5-81c0-4e63-80d7-32a98320af0d",
       "name": "Sidecar Order Track",
       "retryOnFail": true,
       "maxTries": 3,
@@ -92,7 +92,7 @@
         440,
         200
       ],
-      "id": "61439dfd-d78f-45e1-ba45-8cb2afb71e80",
+      "id": "129649c1-3141-4016-8e43-486dfa8e7ada",
       "name": "Handle Order HTTP Error"
     },
     {
@@ -106,7 +106,7 @@
         660,
         0
       ],
-      "id": "8ce9212e-3d40-48d7-b6b1-3ae3705a629f",
+      "id": "87d32340-68e5-40c8-b010-0ec92a2f4c74",
       "name": "Flatten Order Result"
     },
     {
@@ -120,7 +120,7 @@
           },
           "conditions": [
             {
-              "id": "13990a76-402b-48d3-b92e-2818a2d4f953",
+              "id": "a9eced95-f6ee-4ca7-b52d-dae8191b1b46",
               "leftValue": "={{ $json.should_alert_slack }}",
               "rightValue": "true",
               "operator": {
@@ -140,7 +140,7 @@
         880,
         0
       ],
-      "id": "946e76bb-832c-40ab-8afc-d831dc64c686",
+      "id": "c595eb3c-4b35-4c52-9f45-8b5adba0b42b",
       "name": "Should Alert Anomaly?"
     },
     {
@@ -160,7 +160,7 @@
         1100,
         0
       ],
-      "id": "8555ac6c-519d-4708-b34a-523fc84f4214",
+      "id": "40fdb0fe-89a9-42e3-84af-9b995f7ea3ba",
       "name": "Slack Order Anomaly",
       "retryOnFail": true,
       "maxTries": 3,
@@ -186,7 +186,7 @@
         1320,
         120
       ],
-      "id": "7e21e7a8-deb4-4754-b899-9410c69140f9",
+      "id": "ffaf3b30-1356-41f8-a172-9c38c0786bb4",
       "name": "Log Slack Order Error"
     },
     {
@@ -197,7 +197,7 @@
         1100,
         200
       ],
-      "id": "fed9d51f-5c48-465b-b490-7ffd4100c30c",
+      "id": "1ef8fe29-6f44-42d0-a3ed-14ff3f59d132",
       "name": "No Order Alert"
     }
   ],

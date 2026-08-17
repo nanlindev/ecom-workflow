@@ -22,7 +22,7 @@ python3 scripts/seed_demo_scenario_a.py
 
 Expect:
 
-- Inventory upsert for `TEE-BLACK-M` available=42 on Shopify
+- Inventory upsert for `sku-managed-1` available=42 on Shopify
 - Sync reports `has_drift=true`, `writeback_status=skipped_test_mode` (mode=test)
 - Order `5001` status `paid` in PG
 - Return `R-9001` → `manual_review` (amount 120 > auto-approve 50)

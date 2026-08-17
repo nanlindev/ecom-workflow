@@ -67,51 +67,68 @@ def main() -> None:
             print("ERROR: export ECOM_DEMO_STORE_ID=<uuid>", file=sys.stderr)
             sys.exit(1)
 
-    corr = "00000000-0000-4000-8000-0000000000b1"
-    parsed = post(
-        "/competitors/parse",
-        {
-            "store_id": STORE_ID,
-            "url": "https://example.com/products/tee-black-m",
-            "raw_content": "<html><body><h1>Competitor Tee</h1><p>Price: $84.00</p></body></html>",
-            "sku": "TEE-BLACK-M",
-            "source_name": "example-comp",
-            "correlation_id": corr,
-        },
-    )
-    print(
-        "competitor parse:",
-        json.dumps({k: parsed.get(k) for k in ("ok", "price", "snapshot_id", "fallback_used")}, indent=2),
-    )
-
-    rec = post(
-        "/pricing/recommend",
-        {
-            "store_id": STORE_ID,
-            "sku": "TEE-BLACK-M",
-            "current_price": 89,
-            "cost": 35,
-            "correlation_id": "00000000-0000-4000-8000-0000000000b2",
-        },
-    )
-    print(
-        "pricing recommend:",
-        json.dumps(
+    demo_skus = [
+        s.strip()
+        for s in os.getenv("ECOM_DEMO_PRICING_SKUS", "sku-managed-1,SNOWBOARD-LIQUID").split(",")
+        if s.strip()
+    ]
+    # Match assets/competitor-demo prices (undercut / hold cases).
+    demo_competitor_price = {
+        "sku-managed-1": "2499.00",
+        "SNOWBOARD-LIQUID": "3899.00",
+    }
+    for i, sku in enumerate(demo_skus):
+        corr = f"00000000-0000-4000-8000-0000000000b{i + 1}"
+        price = demo_competitor_price.get(sku, "2499.00")
+        parsed = post(
+            "/competitors/parse",
             {
-                k: rec.get(k)
-                for k in (
-                    "ok",
-                    "recommendation_id",
-                    "current_price",
-                    "recommended_price",
-                    "should_alert_slack",
-                    "fallback_used",
-                    "status",
-                )
+                "store_id": STORE_ID,
+                "url": f"https://example.com/products/{sku.lower()}",
+                "raw_content": (
+                    f"<html><body><article data-competitor-sku=\"{sku}\" "
+                    f"data-competitor-price=\"{price}\">"
+                    f"<h1>Competitor {sku}</h1><p>SKU: {sku}</p>"
+                    f"<p>Price: ${price}</p></article></body></html>"
+                ),
+                "sku": sku,
+                "source_name": "example-comp",
+                "correlation_id": corr,
             },
-            indent=2,
-        ),
-    )
+        )
+        print(
+            f"competitor parse [{sku}]:",
+            json.dumps({k: parsed.get(k) for k in ("ok", "price", "snapshot_id", "fallback_used")}, indent=2),
+        )
+
+        rec = post(
+            "/pricing/recommend",
+            {
+                "store_id": STORE_ID,
+                "sku": sku,
+                "correlation_id": f"00000000-0000-4000-8000-0000000000c{i + 1}",
+            },
+        )
+        print(
+            f"pricing recommend [{sku}]:",
+            json.dumps(
+                {
+                    k: rec.get(k)
+                    for k in (
+                        "ok",
+                        "recommendation_id",
+                        "title",
+                        "image_url",
+                        "current_price",
+                        "recommended_price",
+                        "should_alert_slack",
+                        "fallback_used",
+                        "status",
+                    )
+                },
+                indent=2,
+            ),
+        )
 
     rfm = post("/insights/rfm", {"store_id": STORE_ID, "correlation_id": "00000000-0000-4000-8000-0000000000b3"})
     churn = post("/insights/churn", {"store_id": STORE_ID, "correlation_id": "00000000-0000-4000-8000-0000000000b4"})

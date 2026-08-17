@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-# Import shared node helpers from the P1 generator module.
 from generate_workflows import (  # type: ignore
     SIDECAR,
     BATCH_CODE_MODE,
@@ -13,6 +12,7 @@ from generate_workflows import (  # type: ignore
     connect_error,
     cron_node,
     execute_trigger,
+    http_get,
     http_json_post,
     if_bool_node,
     nid,
@@ -50,9 +50,8 @@ def slack_blocks_node(name: str, position: list[int]) -> dict:
         "name": name,
         **_retry_settings(),
         "onError": "continueErrorOutput",
-        # Use Slack API (Access Token / xoxb), NOT OAuth2 — OAuth2 posts as the installing user.
         "credentials": {"slackApi": {"id": "SLACK_BOT_CREDENTIAL_ID", "name": "Slack ecom bot"}},
-        "notes": "Bind Slack API credential with Bot User OAuth Token (xoxb-). OAuth2 posts as you.",
+        "notes": "Bind slackApi (xoxb-); avoid OAuth2.",
         "notesInFlow": True,
     }
 
@@ -105,36 +104,49 @@ def http_get_url(name: str, position: list[int], url_expr: str) -> dict:
     }
 
 
-# ---- JS snippets ----
+# JS snippets
 
 LOAD_TARGETS_JS = r"""
 const res = $input.item.json || {};
 const body = res.body && typeof res.body === 'object' ? res.body : res;
 const targets = Array.isArray(body.targets) ? body.targets : [];
 const store_id = body.store_id || $env.ECOM_DEMO_STORE_ID || '';
-const defaultSku = body.sku || 'TEE-BLACK-M';
+const defaultSku = body.sku || 'sku-managed-1';
+const demoPriceBySku = {
+  'sku-managed-1': '2499.00',
+  'SNOWBOARD-LIQUID': '3899.00',
+};
+function skuDemoHtml(sku) {
+  const price = demoPriceBySku[sku] || '2499.00';
+  return `<html><body><article data-competitor-sku="${sku}" data-competitor-price="${price}"><h1>${sku}</h1><p>SKU: ${sku}</p><p>Price: $${price}</p></article></body></html>`;
+}
 if (!targets.length) {
   return [{
     json: {
       store_id,
-      url: 'https://example.com/products/tee-black-m',
+      url: 'https://example.com/products/sku-managed-1',
       sku: defaultSku,
       source_name: 'example-comp',
       correlation_id: require('crypto').randomUUID(),
-      demo_html: '<html><body><h1>Demo Tee</h1><p>Price: $84.00</p></body></html>',
+      demo_html: skuDemoHtml(defaultSku),
+      allow_demo_fallback: true,
     },
   }];
 }
-return targets.map((t) => ({
-  json: {
-    store_id,
-    url: t.url || t,
-    sku: t.sku || defaultSku,
-    source_name: t.source_name || 'competitor',
-    correlation_id: require('crypto').randomUUID(),
-    demo_html: '',
-  },
-}));
+return targets.map((t) => {
+  const sku = t.sku || defaultSku;
+  return {
+    json: {
+      store_id,
+      url: t.url || t,
+      sku,
+      source_name: t.source_name || 'competitor',
+      correlation_id: require('crypto').randomUUID(),
+      demo_html: skuDemoHtml(sku),
+      allow_demo_fallback: true,
+    },
+  };
+});
 """
 
 PREPARE_PARSE_JS = r"""
@@ -144,51 +156,62 @@ let ctx = {};
 try { ctx = $('Expand Targets').item.json || {}; } catch (_) { ctx = {}; }
 
 const store_id = item.store_id || ctx.store_id || $env.ECOM_DEMO_STORE_ID || '';
-const url = item.url || ctx.url || 'https://example.com/products/tee-black-m';
-const sku = item.sku || ctx.sku || 'TEE-BLACK-M';
+const url = item.url || ctx.url || '';
+const sku = item.sku || ctx.sku || 'sku-managed-1';
 const source_name = item.source_name || ctx.source_name || 'competitor';
 const correlation_id = item.correlation_id || ctx.correlation_id || require('crypto').randomUUID();
-const demo_html = item.demo_html || ctx.demo_html || '<html><body><h1>Demo Tee</h1><p>Price: $84.00</p></body></html>';
+const allow_demo_fallback = item.allow_demo_fallback !== false && ctx.allow_demo_fallback !== false;
+const demo_html = (item.demo_html || ctx.demo_html || '').trim();
 
-let raw = '';
-if (typeof item === 'string') {
-  raw = item;
-} else if (typeof item.data === 'string') {
-  raw = item.data;
-} else if (typeof item.body === 'string') {
-  raw = item.body;
-} else if (item.data != null || item.body != null) {
-  const fetched = item.data || item.body;
-  raw = typeof fetched === 'string' ? fetched : JSON.stringify(fetched);
-} else if (item.raw_content) {
-  raw = String(item.raw_content);
-} else {
-  // Plain HTML response often lands as a single-field object or stray keys — stringify whole item as last resort only if it looks like HTML.
-  const asText = typeof item === 'object' ? (item.html || item.content || '') : '';
-  raw = asText || '';
-  if (!raw && Object.keys(item).length === 1) {
-    const only = item[Object.keys(item)[0]];
-    if (typeof only === 'string') raw = only;
-  }
-  // n8n sometimes puts the entire HTML string as the json value via weird shapes — detect doctype
-  if (!raw) {
-    const blob = JSON.stringify(item);
-    if (blob.includes('<html') || blob.includes('<!doctype')) {
-      // Prefer extracting from known string fields first; if item IS effectively the HTML document fields
-      raw = Object.values(item).find((v) => typeof v === 'string' && v.includes('<')) || '';
+function extractRaw(obj) {
+  if (obj == null) return '';
+  if (typeof obj === 'string') return obj;
+  if (typeof obj.data === 'string') return obj.data;
+  if (typeof obj.body === 'string') return obj.body;
+  if (typeof obj.html === 'string') return obj.html;
+  if (typeof obj.content === 'string') return obj.content;
+  if (typeof obj.raw_content === 'string') return obj.raw_content;
+  if (obj.data != null && typeof obj.data !== 'object') return String(obj.data);
+  if (obj.body != null && typeof obj.body !== 'object') return String(obj.body);
+  // n8n sometimes wraps HTML as the sole string field
+  if (typeof obj === 'object') {
+    const keys = Object.keys(obj);
+    if (keys.length === 1 && typeof obj[keys[0]] === 'string') return obj[keys[0]];
+    for (const v of Object.values(obj)) {
+      if (typeof v === 'string' && (v.includes('<html') || v.includes('Price:') || v.includes('data-competitor-price'))) {
+        return v;
+      }
     }
+  }
+  return '';
+}
+
+let raw = extractRaw(item);
+if (!raw) {
+  const blob = JSON.stringify(item);
+  if (blob.includes('<html') || blob.includes('<!doctype') || blob.includes('data-competitor-price')) {
+    raw = Object.values(item).find((v) => typeof v === 'string' && v.includes('<')) || '';
   }
 }
 
 raw = String(raw || '');
-// Example Domain / empty pages have no price — use seeded demo HTML for reliable demos.
-const hasPrice = /\$\s*\d|price[\s:=]/i.test(raw);
-if (!hasPrice || raw.length < 20) {
+const hasPrice =
+  /data-competitor-price\s*=/.test(raw) ||
+  /\$\s*\d/.test(raw) ||
+  /price[\s:=]/i.test(raw);
+
+let used_demo_fallback = false;
+// Fall back to SKU-scoped demo HTML when fetch has no readable price.
+if ((!hasPrice || raw.length < 20) && allow_demo_fallback && demo_html) {
   raw = demo_html;
+  used_demo_fallback = true;
 }
 
 if (!store_id) {
   throw new Error('store_id missing — set ECOM_DEMO_STORE_ID in n8n env or ensure /competitors/targets returns store_id');
+}
+if (!raw || raw.length < 10) {
+  throw new Error(`Competitor page empty / unreadable for ${sku} url=${url}. Check Fetch node response and competitor_urls.`);
 }
 
 return {
@@ -198,17 +221,46 @@ return {
   source_name,
   raw_content: raw.slice(0, 8000),
   correlation_id,
+  used_demo_fallback,
 };
 """
 
 PRICING_SEED_JS = r"""
-return {
-  store_id: $env.ECOM_DEMO_STORE_ID || '',
-  sku: $env.ECOM_DEMO_PRICING_SKU || 'TEE-BLACK-M',
-  current_price: 89,
-  cost: 35,
-  correlation_id: require('crypto').randomUUID(),
-};
+// Fallback only — prefer Load Pricing Targets → Expand Pricing SKUs from PG config.
+const store_id = $env.ECOM_DEMO_STORE_ID || '';
+return [{
+  json: {
+    store_id,
+    sku: 'sku-managed-1',
+    current_price: null,
+    cost: null,
+    correlation_id: require('crypto').randomUUID(),
+  },
+}];
+"""
+
+EXPAND_PRICING_SKUS_JS = r"""
+const res = $input.item.json || {};
+const body = res.body && typeof res.body === 'object' ? res.body : res;
+const store_id = body.store_id || $env.ECOM_DEMO_STORE_ID || '';
+let skus = Array.isArray(body.skus) ? body.skus.filter(Boolean) : [];
+if (!skus.length && body.sku) skus = [body.sku];
+if (!skus.length) {
+  const fromTargets = Array.isArray(body.targets)
+    ? [...new Set(body.targets.map((t) => t && t.sku).filter(Boolean))]
+    : [];
+  skus = fromTargets;
+}
+if (!skus.length) skus = ['sku-managed-1', 'SNOWBOARD-LIQUID'];
+return skus.map((sku) => ({
+  json: {
+    store_id,
+    sku: String(sku),
+    current_price: null,
+    cost: null,
+    correlation_id: require('crypto').randomUUID(),
+  },
+}));
 """
 
 FLATTEN_PRICING_JS = r"""
@@ -217,34 +269,77 @@ const res = $input.item.json || {};
 const body = res.body && typeof res.body === 'object' ? res.body : res;
 const recId = body.recommendation_id || '';
 const sku = body.sku || prep.sku || '';
+const title = body.title || sku;
+const imageUrl = typeof body.image_url === 'string' ? body.image_url.trim() : '';
+const action = String(body.action || '').toLowerCase();
+const isHold = action === 'hold' || body.needs_approval === false;
 const approveVal = JSON.stringify({ recommendation_id: recId, action: 'approve', sku });
 const rejectVal = JSON.stringify({ recommendation_id: recId, action: 'reject', sku });
-const slack_text = `Pricing recommendation for ${sku}: ${body.current_price} → ${body.recommended_price}`;
-const slack_blocks = {
-  blocks: [
-    { type: 'header', text: { type: 'plain_text', text: 'Pricing recommendation' } },
-    {
-      type: 'section',
-      fields: [
-        { type: 'mrkdwn', text: `*SKU:*\n${sku}` },
-        { type: 'mrkdwn', text: `*Current → Recommended:*\n${body.current_price} → ${body.recommended_price}` },
-        { type: 'mrkdwn', text: `*Strategy:*\n${body.strategy || 'n/a'}` },
-        { type: 'mrkdwn', text: `*Fallback:*\n${body.fallback_used ? 'yes' : 'no'}` },
-      ],
-    },
-    { type: 'section', text: { type: 'mrkdwn', text: `*Reasoning:*\n${body.reasoning || 'n/a'}` } },
-    {
-      type: 'actions',
-      elements: [
-        { type: 'button', text: { type: 'plain_text', text: 'Approve' }, style: 'primary', action_id: 'approve_pricing', value: approveVal },
-        { type: 'button', text: { type: 'plain_text', text: 'Reject' }, style: 'danger', action_id: 'reject_pricing', value: rejectVal },
-      ],
-    },
-  ],
+
+let competitorLine = 'n/a';
+if (body.competitor_price != null && body.competitor_price !== '') {
+  competitorLine = String(body.competitor_price);
+} else if (Array.isArray(body.competitor_prices) && body.competitor_prices.length) {
+  competitorLine = body.competitor_prices
+    .map((c) => (c && c.price != null ? String(c.price) : null))
+    .filter(Boolean)
+    .join(', ');
+}
+
+const headerText = isHold ? 'Pricing hold (no change)' : 'Pricing recommendation';
+const slack_text = isHold
+  ? `Pricing hold for ${title} (${sku}): keep ${body.current_price} (competitor ${competitorLine})`
+  : `Pricing recommendation for ${title} (${sku}): ${body.current_price} → ${body.recommended_price}`;
+
+const mainSection = {
+  type: 'section',
+  text: {
+    type: 'mrkdwn',
+    text: [
+      `*${title}*`,
+      `*SKU:* ${sku}`,
+      `*Competitor:* ${competitorLine}`,
+      `*Current → Recommended:* ${body.current_price} → ${body.recommended_price}`,
+      `*Action:* ${body.action || 'n/a'}`,
+      `*Strategy:* ${body.strategy || 'n/a'}`,
+      `*Fallback:* ${body.fallback_used ? 'yes' : 'no'}`,
+    ].join('\n'),
+  },
 };
+if (imageUrl && /^https?:\/\//i.test(imageUrl)) {
+  mainSection.accessory = {
+    type: 'image',
+    image_url: imageUrl,
+    alt_text: title.slice(0, 100) || sku,
+  };
+}
+
+const blocks = [
+  { type: 'header', text: { type: 'plain_text', text: headerText } },
+  mainSection,
+  { type: 'section', text: { type: 'mrkdwn', text: `*Reasoning:*\n${body.reasoning || 'n/a'}` } },
+];
+if (!isHold) {
+  blocks.push({
+    type: 'actions',
+    elements: [
+      { type: 'button', text: { type: 'plain_text', text: 'Approve' }, style: 'primary', action_id: 'approve_pricing', value: approveVal },
+      { type: 'button', text: { type: 'plain_text', text: 'Reject' }, style: 'danger', action_id: 'reject_pricing', value: rejectVal },
+    ],
+  });
+} else {
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: '_No approval needed — price unchanged._' }],
+  });
+}
+
+const slack_blocks = { blocks };
 return {
   ...prep,
   ...body,
+  title,
+  image_url: imageUrl || null,
   slack_text,
   slack_blocks,
   should_alert_slack: body.should_alert_slack !== false,
@@ -437,17 +532,21 @@ const note = body.message
   ? `\nNote: ${body.message}`
   : (idem ? '\nNote: already decided (same recommendation reused)' : '');
 const title = idem ? `Pricing ${prep.action} (idempotent)` : `Pricing ${prep.action}`;
+const lives = Array.isArray(body.live_writebacks) ? body.live_writebacks : [];
+const liveLines = lives.length
+  ? '\n' + lives.map((r) => `• ${r.channel || '?'}: ${r.live_status || 'n/a'}${r.error ? ` (${r.error})` : ''}`).join('\n')
+  : '';
 const slack_text = `${title}: ${sku} → ${status} (writeback=${wb})`;
 const blocks = [
   {
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: `*${title}*\nSKU: ${sku}\nStatus: *${status}*\nWriteback: ${wb}\nBy: ${prep.actor || 'n/a'}${note}`,
+      text: `*${title}*\nSKU: ${sku}\nStatus: *${status}*\nWriteback: ${wb}${liveLines}\nBy: ${prep.actor || 'n/a'}${note}`,
     },
   },
 ];
-// Prefer response_url (hooks.slack.com) over chat.update — avoids OAuth/proxy flakes on Update.
+// Prefer interaction response_url over chat.update.
 const slack_response_body = {
   replace_original: true,
   text: slack_text,
@@ -632,24 +731,31 @@ def build_pricing_engine() -> None:
                 {"name": "correlation_id"},
             ],
         ),
-        code_node("Cron Pricing Seed", PRICING_SEED_JS, [220, 0], mode=BATCH_CODE_MODE),
+        http_get("Load Pricing Targets", [220, 0], f"{SIDECAR}/competitors/targets"),
+        code_node(
+            "Handle Targets HTTP Error",
+            error_message_prelude("Load pricing targets failed")
+            + "\nreturn { ok: false, store_id: $env.ECOM_DEMO_STORE_ID || '', skus: ['sku-managed-1','SNOWBOARD-LIQUID'], targets_error_message: errorMessage };\n",
+            [220, 200],
+        ),
+        code_node("Expand Pricing SKUs", EXPAND_PRICING_SKUS_JS, [440, 0], mode=BATCH_CODE_MODE),
         code_node(
             "Prepare Pricing Body",
             """
 const item = $input.item.json || {};
 return {
   store_id: item.store_id || $env.ECOM_DEMO_STORE_ID || '',
-  sku: item.sku || 'TEE-BLACK-M',
+  sku: item.sku || 'sku-managed-1',
   current_price: item.current_price == null || item.current_price === '' ? null : Number(item.current_price),
   cost: item.cost == null || item.cost === '' ? null : Number(item.cost),
   correlation_id: item.correlation_id || require('crypto').randomUUID(),
 };
 """,
-            [440, 80],
+            [660, 80],
         ),
         http_json_post(
             "Sidecar Pricing Recommend",
-            [660, 80],
+            [880, 80],
             f"{SIDECAR}/pricing/recommend",
             "={{ JSON.stringify({ store_id: $json.store_id, sku: $json.sku, current_price: $json.current_price, cost: $json.cost, correlation_id: $json.correlation_id }) }}",
             notes="Writes pricing_recommendations pending row",
@@ -658,23 +764,26 @@ return {
             "Handle Pricing HTTP Error",
             error_message_prelude("Pricing recommend failed")
             + "\nconst prep = $('Prepare Pricing Body').item.json;\nreturn { ...prep, ok: false, should_alert_slack: false, pricing_error_message: errorMessage };\n",
-            [660, 260],
+            [880, 260],
         ),
-        code_node("Flatten Pricing Result", FLATTEN_PRICING_JS, [880, 80]),
-        if_bool_node("Should Slack Pricing?", [1100, 80], "={{ $json.should_alert_slack }}"),
-        slack_blocks_node("Slack Pricing Approval", [1320, 0]),
+        code_node("Flatten Pricing Result", FLATTEN_PRICING_JS, [1100, 80]),
+        if_bool_node("Should Slack Pricing?", [1320, 80], "={{ $json.should_alert_slack }}"),
+        slack_blocks_node("Slack Pricing Approval", [1540, 0]),
         code_node(
             "Log Slack Pricing Error",
             error_message_prelude("Slack pricing approval post failed")
             + "\nconst prep = $('Flatten Pricing Result').first()?.json || {};\nreturn { ...prep, ok: false, slack_error_message: errorMessage, _metadata: { processing_stage: 'pricing_slack_error', severity: 'medium', error_message: errorMessage } };\n",
-            [1320, 200],
+            [1540, 200],
         ),
-        noop("No Pricing Slack", [1320, 320]),
-        noop("Pricing Done", [1540, 80]),
+        noop("No Pricing Slack", [1540, 320]),
+        noop("Pricing Done", [1760, 80]),
     ]
     conn: dict = {}
-    connect(conn, "Pricing Engine Cron", "Cron Pricing Seed")
-    connect(conn, "Cron Pricing Seed", "Prepare Pricing Body")
+    connect(conn, "Pricing Engine Cron", "Load Pricing Targets")
+    connect(conn, "Load Pricing Targets", "Expand Pricing SKUs")
+    connect_error(conn, "Load Pricing Targets", "Handle Targets HTTP Error")
+    connect(conn, "Handle Targets HTTP Error", "Expand Pricing SKUs")
+    connect(conn, "Expand Pricing SKUs", "Prepare Pricing Body")
     connect(conn, "When Executed by Another Workflow", "Prepare Pricing Body")
     connect(conn, "Prepare Pricing Body", "Sidecar Pricing Recommend")
     connect_error(conn, "Sidecar Pricing Recommend", "Handle Pricing HTTP Error")
@@ -804,8 +913,7 @@ return {
 """,
             [1320, -80],
         ),
-        # Resend Mail API — gated; test path never reaches with should_send_email false.
-        # Free tier: from onboarding@resend.dev can only send to your Resend account email until a domain is verified.
+        # Resend HTTP; gated by should_send_email upstream.
         {
             "parameters": {
                 "method": "POST",
@@ -896,10 +1004,9 @@ def build_slack_actions() -> None:
             "Handle Sidecar Action Error",
             HANDLE_SIDECAR_ACTION_ERROR_JS,
             [1540, 200],
-            notes="Business failed after Ack — tell user via response_url",
+            notes="Acked; sidecar error → response_url card",
         ),
         code_node("Flatten Pricing Action", FLATTEN_PRICING_ACTION_JS, [1540, 0]),
-        # Prefer Slack response_url over chat.update (OAuth Update was failing with connection closed).
         http_json_post(
             "Post Slack response_url",
             [1760, 0],
@@ -927,13 +1034,13 @@ def build_slack_actions() -> None:
             "Handle Notify Fail",
             HANDLE_NOTIFY_FAIL_JS,
             [1980, 80],
-            notes="Business may have succeeded; card refresh failed → channel fallback",
+            notes="response_url fail → channel fallback",
         ),
         code_node(
             "Handle Failure Notify Fail",
             HANDLE_FAILURE_NOTIFY_FAIL_JS,
             [1980, 200],
-            notes="Sidecar failed AND response_url failed → channel fallback",
+            notes="sidecar+response_url fail → channel",
         ),
         code_node(
             "Handle Unauthorized Notify Fail",

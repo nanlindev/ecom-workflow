@@ -16,9 +16,9 @@
         0,
         0
       ],
-      "id": "8f1ec2f6-e187-41d6-9f70-ea11e293c95b",
+      "id": "8a036c68-bd15-457b-9351-64200530cb59",
       "name": "Slack Interactivity",
-      "webhookId": "0aad31c6-8b0e-4bf0-8083-f5710900ead1",
+      "webhookId": "a1b73959-a795-4fe8-9da6-98739ccb0a72",
       "notes": "Shopify webhook ingress; rawBody required for HMAC verification.",
       "notesInFlow": true
     },
@@ -33,7 +33,7 @@
         220,
         0
       ],
-      "id": "c535b52d-5d48-411e-8bd8-154b2f26d59d",
+      "id": "0bed2d7b-4ab0-4040-9469-ec4b91d4a23b",
       "name": "Verify Slack Signature"
     },
     {
@@ -47,7 +47,7 @@
           },
           "conditions": [
             {
-              "id": "4f2bbbaf-45dd-497a-a61d-6b0ba0f38466",
+              "id": "9e2ba9d4-bc13-4a60-af6a-a2ce38b01fc8",
               "leftValue": "={{ $json.signature_valid }}",
               "rightValue": "true",
               "operator": {
@@ -67,7 +67,7 @@
         440,
         0
       ],
-      "id": "1678422c-4624-4542-a19b-582e2da0b861",
+      "id": "58eaf050-bbb2-4856-aae1-5079bf3e8f26",
       "name": "Signature OK?"
     },
     {
@@ -84,7 +84,7 @@
         660,
         -160
       ],
-      "id": "d3888772-6074-47d3-a484-dc7105508c3d",
+      "id": "4c5b090e-0ff1-4230-9fa6-4003c4d72a35",
       "name": "Respond 401"
     },
     {
@@ -101,7 +101,7 @@
         660,
         0
       ],
-      "id": "9588e0a5-09bd-4a20-91b7-784400950541",
+      "id": "ef127b5c-c75d-4f22-bfbd-5276de585d3e",
       "name": "Ack Slack"
     },
     {
@@ -115,7 +115,7 @@
         880,
         0
       ],
-      "id": "9c9efad3-0738-436a-9c00-46d53fad2f0e",
+      "id": "d59eb870-71d6-4ffe-870f-094666ce8a10",
       "name": "Parse Slack Action"
     },
     {
@@ -129,7 +129,7 @@
           },
           "conditions": [
             {
-              "id": "06214c87-9e6d-4b6b-a8a6-edd2ca9451f1",
+              "id": "6bcd96e8-aa72-43e7-8adc-95c8ad076cac",
               "leftValue": "={{ $json.authorized }}",
               "rightValue": "true",
               "operator": {
@@ -149,7 +149,7 @@
         1100,
         0
       ],
-      "id": "b0ed4db1-a8d9-4b1e-8b73-22b9a4a35909",
+      "id": "89fd9df4-29d4-4eaa-be4f-d76966c45221",
       "name": "Authorized Admin?"
     },
     {
@@ -163,7 +163,7 @@
         1320,
         -160
       ],
-      "id": "f9695c7b-eff8-4221-97a1-6e72b27b992b",
+      "id": "528baf4f-b130-4cb1-8522-b849b98e78e6",
       "name": "Unauthorized Reply"
     },
     {
@@ -192,7 +192,7 @@
         1320,
         0
       ],
-      "id": "3f5fffc1-4a78-483a-b976-5f77e23933ca",
+      "id": "3059b14e-19c7-4c35-b069-2bfea5ea60b9",
       "name": "Sidecar Pricing Action",
       "retryOnFail": true,
       "maxTries": 3,
@@ -212,15 +212,15 @@
         1540,
         200
       ],
-      "id": "4b4f6d42-d7e7-475f-8eba-db0eb0588f87",
+      "id": "08f2d1c8-b12c-4db6-9feb-a75ceeb0cbd1",
       "name": "Handle Sidecar Action Error",
-      "notes": "Business failed after Ack — tell user via response_url",
+      "notes": "Acked; sidecar error → response_url card",
       "notesInFlow": true
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "\nconst prep = $('Parse Slack Action').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst status = body.status || 'unknown';\nconst sku = body.sku || prep.sku || 'n/a';\nconst wb = body.writeback_status || 'n/a';\nconst idem = body.idempotent === true;\nconst note = body.message\n  ? `\\nNote: ${body.message}`\n  : (idem ? '\\nNote: already decided (same recommendation reused)' : '');\nconst title = idem ? `Pricing ${prep.action} (idempotent)` : `Pricing ${prep.action}`;\nconst slack_text = `${title}: ${sku} → ${status} (writeback=${wb})`;\nconst blocks = [\n  {\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*${title}*\\nSKU: ${sku}\\nStatus: *${status}*\\nWriteback: ${wb}\\nBy: ${prep.actor || 'n/a'}${note}`,\n    },\n  },\n];\n// Prefer response_url (hooks.slack.com) over chat.update — avoids OAuth/proxy flakes on Update.\nconst slack_response_body = {\n  replace_original: true,\n  text: slack_text,\n  blocks,\n};\nreturn {\n  ...prep,\n  ...body,\n  sku,\n  slack_text,\n  slack_blocks: { blocks },\n  slack_response_body,\n};\n"
+        "jsCode": "\nconst prep = $('Parse Slack Action').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst status = body.status || 'unknown';\nconst sku = body.sku || prep.sku || 'n/a';\nconst wb = body.writeback_status || 'n/a';\nconst idem = body.idempotent === true;\nconst note = body.message\n  ? `\\nNote: ${body.message}`\n  : (idem ? '\\nNote: already decided (same recommendation reused)' : '');\nconst title = idem ? `Pricing ${prep.action} (idempotent)` : `Pricing ${prep.action}`;\nconst lives = Array.isArray(body.live_writebacks) ? body.live_writebacks : [];\nconst liveLines = lives.length\n  ? '\\n' + lives.map((r) => `• ${r.channel || '?'}: ${r.live_status || 'n/a'}${r.error ? ` (${r.error})` : ''}`).join('\\n')\n  : '';\nconst slack_text = `${title}: ${sku} → ${status} (writeback=${wb})`;\nconst blocks = [\n  {\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*${title}*\\nSKU: ${sku}\\nStatus: *${status}*\\nWriteback: ${wb}${liveLines}\\nBy: ${prep.actor || 'n/a'}${note}`,\n    },\n  },\n];\n// Prefer interaction response_url over chat.update.\nconst slack_response_body = {\n  replace_original: true,\n  text: slack_text,\n  blocks,\n};\nreturn {\n  ...prep,\n  ...body,\n  sku,\n  slack_text,\n  slack_blocks: { blocks },\n  slack_response_body,\n};\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -228,7 +228,7 @@
         1540,
         0
       ],
-      "id": "35c00601-cb37-40b4-baaa-c81c9406ba6d",
+      "id": "da7129a5-7a58-4b96-a018-e86eb34cb923",
       "name": "Flatten Pricing Action"
     },
     {
@@ -248,7 +248,7 @@
         1760,
         0
       ],
-      "id": "4250ce8b-5d75-4ad1-9267-d79e7564793b",
+      "id": "fae0618b-303a-45a5-905d-8b07022215a5",
       "name": "Post Slack response_url",
       "retryOnFail": true,
       "maxTries": 3,
@@ -274,7 +274,7 @@
         1760,
         200
       ],
-      "id": "ea695bb1-35ad-4f0c-874f-4c2bf5bd5b8d",
+      "id": "a061b689-9d2e-4fba-8d61-4aa254bbb6a2",
       "name": "Post Failure response_url",
       "retryOnFail": true,
       "maxTries": 3,
@@ -300,7 +300,7 @@
         1540,
         -160
       ],
-      "id": "7fcb4dc5-2db6-40a9-9fbd-54f3c69c3fde",
+      "id": "0fed33f2-191d-40a6-855c-7544aa1194f2",
       "name": "Post Unauthorized response_url",
       "retryOnFail": true,
       "maxTries": 3,
@@ -318,9 +318,9 @@
         1980,
         80
       ],
-      "id": "9e1e596a-60c2-4083-b585-2aec50035448",
+      "id": "fd9fb931-a2de-4955-a728-4ae2ff148900",
       "name": "Handle Notify Fail",
-      "notes": "Business may have succeeded; card refresh failed → channel fallback",
+      "notes": "response_url fail → channel fallback",
       "notesInFlow": true
     },
     {
@@ -334,9 +334,9 @@
         1980,
         200
       ],
-      "id": "e1f86179-6904-4ff0-bec7-c98b64566c0e",
+      "id": "7eba580b-9c2e-43da-a789-1304a59bb862",
       "name": "Handle Failure Notify Fail",
-      "notes": "Sidecar failed AND response_url failed → channel fallback",
+      "notes": "sidecar+response_url fail → channel",
       "notesInFlow": true
     },
     {
@@ -350,7 +350,7 @@
         1760,
         -160
       ],
-      "id": "b8e2675f-8f69-4b58-9a8f-d2c472f19470",
+      "id": "186d955f-75bb-4b68-8f62-a2a5f525154a",
       "name": "Handle Unauthorized Notify Fail"
     },
     {
@@ -370,7 +370,7 @@
         2200,
         80
       ],
-      "id": "9214b3a6-18f1-47a5-bf95-76ce361972ec",
+      "id": "7cfb9585-18db-4b09-9460-3c33422a007a",
       "name": "Slack Fallback Notify",
       "retryOnFail": true,
       "maxTries": 3,
@@ -402,7 +402,7 @@
         2200,
         200
       ],
-      "id": "e136d18f-800a-4542-ae26-85f81bf778cf",
+      "id": "d14727f6-ba9e-47e5-a1fc-be3b2ce3d2d4",
       "name": "Slack Fallback Failure",
       "retryOnFail": true,
       "maxTries": 3,
@@ -425,7 +425,7 @@
         2420,
         0
       ],
-      "id": "cba74844-8f75-4adc-a53a-e8ac97fb5717",
+      "id": "977f97e6-d18a-4040-89ee-bff5e5534c94",
       "name": "Slack Actions End"
     }
   ],

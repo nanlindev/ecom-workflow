@@ -1,0 +1,307 @@
+{
+  "name": "Ecom Weekly Summary",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                5
+              ],
+              "triggerAtHour": 17
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "6fb65e76-d207-4539-a6da-549a72c9578f",
+      "name": "Friday 5pm",
+      "notes": "Friday 17:00 UTC weekly ops digest.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst crypto = require('crypto');\nconst item = $input.item.json || {};\nreturn {\n  period: 'weekly',\n  store_id: item.store_id || $env.ECOM_DEMO_STORE_ID || null,\n  store_key: item.store_key || $env.ECOM_DEMO_STORE_KEY || 'demo-shopify',\n  correlation_id: item.correlation_id || crypto.randomUUID(),\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "id": "553c17d7-f99d-4350-be3d-526893f7e855",
+      "name": "Prepare Summary Body",
+      "notes": "period=weekly; store from env when unset.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/ops/summary",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ period: $json.period, store_id: $json.store_id || null, store_key: $json.store_key || null, correlation_id: $json.correlation_id }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        440,
+        0
+      ],
+      "id": "50785bcc-f048-4599-8922-07e4b7c790fb",
+      "name": "Sidecar Ops Summary",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Weekly window (7d) ops digest.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Ops summary sidecar failed';\n\nconst prep = $('Prepare Summary Body').item.json;\nreturn {\n  ...prep,\n  ok: false,\n  should_alert_slack: false,\n  summary_error_message: errorMessage,\n  slack_text: `Ecom summary failed: ${errorMessage}`,\n  _metadata: { processing_stage: 'ops_summary_failed', severity: 'high' },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ],
+      "id": "9b1b7e77-b63d-471c-8f86-102df0757a19",
+      "name": "Handle Summary HTTP Error"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst prep = $('Prepare Summary Body').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nreturn {\n  ...prep,\n  ...body,\n  correlation_id: body.correlation_id || prep.correlation_id,\n  should_alert_slack: body.should_alert_slack === true,\n  slack_text: body.slack_text || `Ecom ${prep.period} summary`,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "id": "9168540e-726e-42b7-a5b8-387243dd8708",
+      "name": "Flatten Summary Result"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5a24ecfe-28f9-46a4-a44e-cac6fc392483",
+              "leftValue": "={{ $json.should_alert_slack }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "86707439-ff28-416b-83c6-2d6182f08563",
+      "name": "Should Send Weekly?"
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.SLACK_ECOM_CHANNEL_ID || 'SLACK_ECOM_CHANNEL_ID' }}"
+        },
+        "text": "={{ $json.slack_text }}"
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        -80
+      ],
+      "id": "739b8655-7437-46f7-97b5-40646ee363dc",
+      "name": "Slack Weekly Summary",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_BOT_CREDENTIAL_ID",
+          "name": "Slack ecom bot"
+        }
+      },
+      "notes": "Bind Slack API Access Token = Bot User OAuth Token (xoxb-). Do not use OAuth2.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Slack weekly summary failed';\n\nconst prev = $('Flatten Summary Result').item.json;\nreturn { ...prev, slack_failed: true, slack_error_message: errorMessage };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        40
+      ],
+      "id": "6efa8535-efc2-4387-ab13-031b7acfa256",
+      "name": "Log Slack Weekly Error"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        160
+      ],
+      "id": "f870ab32-fc49-4bfd-a7a4-80b41c0da067",
+      "name": "Skip Weekly Slack"
+    }
+  ],
+  "connections": {
+    "Friday 5pm": {
+      "main": [
+        [
+          {
+            "node": "Prepare Summary Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Summary Body": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Ops Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Ops Summary": {
+      "main": [
+        [
+          {
+            "node": "Flatten Summary Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Summary HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Summary HTTP Error": {
+      "main": [
+        [
+          {
+            "node": "Flatten Summary Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Summary Result": {
+      "main": [
+        [
+          {
+            "node": "Should Send Weekly?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Send Weekly?": {
+      "main": [
+        [
+          {
+            "node": "Slack Weekly Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Weekly Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Weekly Summary": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Log Slack Weekly Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Ecom Error Handler"
+  },
+  "tags": [
+    {
+      "name": "ecom-workflow"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

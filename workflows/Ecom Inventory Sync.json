@@ -29,7 +29,7 @@
         0,
         0
       ],
-      "id": "9f89583a-99ca-4cdb-b1f9-412e731defc5",
+      "id": "64b1ee40-4f75-4ee9-9333-0270b056e5c5",
       "name": "When Executed by Another Workflow"
     },
     {
@@ -49,7 +49,7 @@
         0,
         220
       ],
-      "id": "b7571b41-c21a-4b30-82b5-df8dbd8cf968",
+      "id": "29635ef9-e9b7-4e6f-a2a5-86564ad717a6",
       "name": "Inventory Reconcile Cron",
       "notes": "Periodic inventory reconciliation when webhooks are missed.",
       "notesInFlow": true
@@ -65,7 +65,7 @@
         220,
         220
       ],
-      "id": "fe88dfa9-8149-4329-a631-a26669c1d0eb",
+      "id": "c762bae0-8b33-490a-9030-1c9b58660f2a",
       "name": "Cron Seed Payload"
     },
     {
@@ -79,7 +79,7 @@
         440,
         80
       ],
-      "id": "2b7f7fa0-25a2-4daf-bae4-512a25f528c9",
+      "id": "ea572eb5-dde5-4993-a89b-30b3ab97d858",
       "name": "Merge Inventory Triggers",
       "notes": "Merge multi-source inventory observations before master conflict resolution.",
       "notesInFlow": true
@@ -95,7 +95,7 @@
         660,
         80
       ],
-      "id": "336368ac-7d8b-4c3a-8149-f2dd38bac2d2",
+      "id": "d8a162e1-8c32-4970-8eb8-4853ba84b80b",
       "name": "Prepare Inventory Sync Body",
       "notes": "Normalize Execute/Cron payload; optional slave_levels from Merge upstream.",
       "notesInFlow": true
@@ -126,13 +126,13 @@
         880,
         80
       ],
-      "id": "409df529-7cbb-453b-9b23-6e0bcf69bc84",
+      "id": "d7b5a242-3726-41b8-8610-248d37307227",
       "name": "Sidecar Inventory Sync",
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000,
       "onError": "continueErrorOutput",
-      "notes": "Master channel wins; test mode sets writeback_status=skipped_test_mode.",
+      "notes": "Master wins; live writeback if creds else SoT-only.",
       "notesInFlow": true
     },
     {
@@ -146,13 +146,13 @@
         880,
         260
       ],
-      "id": "2d5e4cd6-6e8d-499c-9225-0aa569ee0520",
+      "id": "a47b1d16-263c-453d-a746-3e11f4915dd5",
       "name": "Handle Inventory HTTP Error"
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "\nconst prep = $('Prepare Inventory Sync Body').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst drifts = body.drifts || [];\nreturn {\n  ...prep,\n  ...body,\n  correlation_id: body.correlation_id || prep.correlation_id,\n  slack_text: [\n    '📦 Inventory drift detected',\n    `Store: ${body.store_id || prep.store_id}`,\n    `Master: ${body.master_channel || 'shopify'}`,\n    `Drifts: ${drifts.length}`,\n    drifts.slice(0, 5).map(d => `${d.sku}: ${d.slave_channel}=${d.slave_available} vs master=${d.master_available}`).join('\\n'),\n    `Writeback: ${body.writeback_status || 'n/a'}`,\n    `Correlation: ${body.correlation_id || prep.correlation_id}`,\n  ].filter(Boolean).join('\\n'),\n};\n"
+        "jsCode": "\nconst prep = $('Prepare Inventory Sync Body').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst drifts = body.drifts || [];\nconst channels = (body.channel_writebacks || [])\n  .map(c => `${c.slave_channel || c.channel}=${c.live_status || 'n/a'}`)\n  .slice(0, 5)\n  .join(', ');\nreturn {\n  ...prep,\n  ...body,\n  correlation_id: body.correlation_id || prep.correlation_id,\n  slack_text: [\n    '📦 Inventory drift detected',\n    `Store: ${body.store_id || prep.store_id}`,\n    `Master: ${body.master_channel || 'shopify'}`,\n    `Drifts: ${drifts.length}`,\n    drifts.slice(0, 5).map(d => `${d.sku}: ${d.slave_channel}=${d.slave_available} vs master=${d.master_available}`).join('\\n'),\n    `Writeback: ${body.writeback_status || 'n/a'}${channels ? ` (${channels})` : ''}`,\n    `Correlation: ${body.correlation_id || prep.correlation_id}`,\n  ].filter(Boolean).join('\\n'),\n};\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -160,7 +160,7 @@
         1100,
         80
       ],
-      "id": "f1f8a857-3c00-41e2-9a88-15ab3995adb3",
+      "id": "da298804-931a-476d-b412-b06407757816",
       "name": "Flatten Inventory Result"
     },
     {
@@ -174,7 +174,7 @@
           },
           "conditions": [
             {
-              "id": "da5b0a01-9cb9-48c3-99bc-b471fe912231",
+              "id": "d2d28532-3867-4d97-a962-2d40f38303d4",
               "leftValue": "={{ $json.should_alert_slack }}",
               "rightValue": "true",
               "operator": {
@@ -194,7 +194,7 @@
         1320,
         80
       ],
-      "id": "b8f59bbd-57b2-464e-b665-caa5b5a57344",
+      "id": "7c2d2950-3f26-4390-ad9f-251046375623",
       "name": "Should Alert Drift?"
     },
     {
@@ -214,7 +214,7 @@
         1540,
         0
       ],
-      "id": "11ad6aec-572a-417a-86e5-8906f30d77a8",
+      "id": "289182db-3b64-4bdf-84ac-9d4ea7f5bb44",
       "name": "Slack Inventory Drift",
       "retryOnFail": true,
       "maxTries": 3,
@@ -240,7 +240,7 @@
         1760,
         120
       ],
-      "id": "a2f1cb97-08d8-478f-9105-fb7eae1f01d1",
+      "id": "308e272c-b343-4e2c-b7bd-faa90ce2a63e",
       "name": "Log Slack Drift Error"
     },
     {
@@ -251,7 +251,7 @@
         1540,
         200
       ],
-      "id": "cf7f4470-f453-42f6-9252-087e23519082",
+      "id": "f6bd54d2-28d0-4203-a5e2-24cbc33f1641",
       "name": "No Drift Alert"
     }
   ],

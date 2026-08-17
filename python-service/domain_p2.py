@@ -10,19 +10,225 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from db import connect
-from domain_p1 import _cfg, _truthy, _uuid, get_config, write_audit
+from domain_p1 import _cfg, _lookup_listing_raw, _truthy, _uuid, get_config, write_audit
 from llm import complete_json
 from prompt_loader import load_prompt
+
+
+def _extract_commerce_image_url(raw: Any) -> str | None:
+    """Best-effort product thumbnail from Shopify / Woo listing or product raw JSON."""
+    if not isinstance(raw, dict):
+        return None
+    images = raw.get("images")
+    if isinstance(images, list) and images:
+        first = images[0]
+        if isinstance(first, dict):
+            for key in ("src", "url", "src_large", "thumbnail"):
+                u = first.get(key)
+                if isinstance(u, str) and u.startswith("http"):
+                    return u
+        elif isinstance(first, str) and first.startswith("http"):
+            return first
+    image = raw.get("image")
+    if isinstance(image, dict):
+        for key in ("src", "url"):
+            u = image.get(key)
+            if isinstance(u, str) and u.startswith("http"):
+                return u
+    if isinstance(image, str) and image.startswith("http"):
+        return image
+    for key in ("featured_src", "thumbnail", "image_url"):
+        u = raw.get(key)
+        if isinstance(u, str) and u.startswith("http"):
+            return u
+    variants = raw.get("variants")
+    if isinstance(variants, list) and variants:
+        v0 = variants[0]
+        if isinstance(v0, dict):
+            img = v0.get("image") or v0.get("featured_image")
+            if isinstance(img, dict):
+                u = img.get("src") or img.get("url")
+                if isinstance(u, str) and u.startswith("http"):
+                    return u
+            if isinstance(img, str) and img.startswith("http"):
+                return img
+    return None
+
+
+def _extract_commerce_price(raw: Any) -> float | None:
+    if not isinstance(raw, dict):
+        return None
+    for key in ("price", "regular_price"):
+        try:
+            if raw.get(key) is not None and str(raw.get(key)).strip() != "":
+                return float(raw[key])
+        except (TypeError, ValueError):
+            pass
+    variants = raw.get("variants")
+    if isinstance(variants, list) and variants:
+        v0 = variants[0]
+        if isinstance(v0, dict):
+            try:
+                if v0.get("price") is not None:
+                    return float(v0["price"])
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _product_display_meta(store_id: str, sku: str) -> dict[str, Any]:
+    """Title + public image URL for Slack (prefer Shopify listing, then Woo, then product)."""
+    title = sku
+    image_url: str | None = None
+    product_raw: dict[str, Any] = {}
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT title, raw FROM products WHERE store_id = %s AND sku = %s",
+                (store_id, sku),
+            )
+            prod = cur.fetchone()
+            if prod:
+                if prod.get("title"):
+                    title = str(prod["title"])
+                if isinstance(prod.get("raw"), dict):
+                    product_raw = prod["raw"]
+            cur.execute(
+                """
+                SELECT platform, raw FROM listings
+                WHERE store_id = %s AND sku = %s
+                ORDER BY CASE platform
+                    WHEN 'shopify' THEN 0
+                    WHEN 'woocommerce' THEN 1
+                    ELSE 2
+                END
+                """,
+                (store_id, sku),
+            )
+            for row in cur.fetchall() or []:
+                raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+                if not image_url:
+                    image_url = _extract_commerce_image_url(raw)
+                if title == sku and raw.get("title"):
+                    title = str(raw["title"])
+                elif title == sku and raw.get("name"):
+                    title = str(raw["name"])
+    if not image_url:
+        image_url = _extract_commerce_image_url(product_raw)
+    if title == sku and product_raw.get("title"):
+        title = str(product_raw["title"])
+    elif title == sku and product_raw.get("name"):
+        title = str(product_raw["name"])
+    return {"title": title, "image_url": image_url, "product_raw": product_raw}
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_price_from_text(raw: str) -> float | None:
-    m = re.search(r"(?:USD|\$|€|£)\s*([0-9]+(?:\.[0-9]{1,2})?)", raw, re.I)
+def _apply_live_price_writeback(
+    *,
+    store_id: str,
+    sku: str,
+    price: float,
+    currency: str,
+    correlation_id: str,
+) -> list[dict[str, Any]]:
+    """Push approved price to Shopify Admin and/or Woo when credentials exist."""
+    _ = correlation_id
+    results: list[dict[str, Any]] = []
+    cfg = get_config()
+    targets = [
+        c.strip()
+        for c in _cfg(cfg["flat"], "price_writeback_channels", "shopify,woocommerce").split(",")
+        if c.strip()
+    ]
+    if not targets:
+        targets = [cfg["master_channel"]]
+
+    for channel in targets:
+        ch = channel.lower()
+        listing = _lookup_listing_raw(store_id, ch, sku)
+        if ch == "shopify":
+            from channels.shopify_admin import (
+                ShopifyAdminClient,
+                extract_shopify_variant_id,
+            )
+
+            client = ShopifyAdminClient()
+            if not client.configured:
+                results.append({"channel": ch, "live_status": "skipped_no_credentials"})
+                continue
+            variant_id = extract_shopify_variant_id(listing.get("raw") or {}, sku=sku)
+            if not variant_id and listing.get("external_id"):
+                # Prefer Admin search by SKU when listing maps product id only
+                variant_id = client.find_variant_id_by_sku(sku)
+            if not variant_id:
+                variant_id = client.find_variant_id_by_sku(sku)
+            if not variant_id:
+                results.append(
+                    {
+                        "channel": ch,
+                        "live_status": "error",
+                        "error": "missing_variant_id",
+                    }
+                )
+                continue
+            r = client.set_variant_price(variant_id=variant_id, price=price)
+            r["channel"] = ch
+            results.append(r)
+        elif ch in {"woocommerce", "woo"}:
+            from channels.woocommerce import WooCommerceClient
+
+            client = WooCommerceClient()
+            if not client.configured:
+                results.append({"channel": ch, "live_status": "skipped_no_credentials"})
+                continue
+            r = client.set_price_by_sku(
+                sku,
+                price,
+                product_id=listing.get("external_id"),
+                currency=currency,
+            )
+            r["channel"] = ch
+            results.append(r)
+        else:
+            results.append({"channel": ch, "live_status": "sot_only", "error": "unsupported_channel"})
+    return results
+
+
+def _parse_structured_competitor_price(raw: str, sku: str | None) -> float | None:
+    """SKU-bound price only (data-competitor-* or SKU…Price block). No 'first $ on page' fallback."""
+    if not sku or not raw:
+        return None
+    esc = re.escape(sku.strip())
+    text = raw
+    for pat in (
+        rf'data-competitor-sku=["\']{esc}["\'][^>]*?data-competitor-price=["\']([0-9]+(?:\.[0-9]+)?)["\']',
+        rf'data-competitor-price=["\']([0-9]+(?:\.[0-9]+)?)["\'][^>]*?data-competitor-sku=["\']{esc}["\']',
+        rf'SKU:\s*{esc}\s*.{{0,500}}?Price:\s*\$?\s*([0-9]+(?:\.[0-9]{{1,2}})?)',
+    ):
+        m = re.search(pat, text, re.I | re.S)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                continue
+    return None
+
+
+def _parse_price_from_text(raw: str, sku: str | None = None) -> float | None:
+    """Extract a price; with sku, only return SKU-scoped structured price (avoid multi-card bleed)."""
+    structured = _parse_structured_competitor_price(raw, sku)
+    if structured is not None:
+        return structured
+    if sku:
+        # With sku set, refuse unscoped first-$ fallback (multi-card bleed).
+        return None
+    text = raw or ""
+    m = re.search(r"(?:USD|\$|€|£)\s*([0-9]+(?:\.[0-9]{1,2})?)", text, re.I)
     if not m:
-        m = re.search(r"\b([0-9]+\.[0-9]{2})\b", raw)
+        m = re.search(r"\b([0-9]+\.[0-9]{2})\b", text)
     if not m:
         return None
     try:
@@ -43,30 +249,49 @@ def parse_competitor(
     """LLM (or regex fallback) extract price → insert price_snapshots."""
     corr = correlation_id or _uuid()
     truncated = (raw_content or "")[:8000]
-    prompt = load_prompt("competitor_parse")
-    user = prompt.render(url=url or "", raw_content=truncated)
-
-    def _fallback() -> dict[str, Any]:
-        price = _parse_price_from_text(truncated)
-        return {
-            "price": price,
+    structured = _parse_structured_competitor_price(truncated, sku)
+    if structured is not None:
+        parsed = {
+            "price": structured,
             "currency": "USD",
             "title": None,
             "in_stock": None,
-            "fallback_used": True,
+            "fallback_used": False,
+            "parse_source": "structured_sku",
         }
+        fb = False
+        price_f = structured
+    else:
+        prompt = load_prompt("competitor_parse")
+        user = prompt.render(url=url or "", raw_content=truncated, sku=sku or "")
 
-    parsed, fb = complete_json(
-        system="Extract competitor product price as JSON only.",
-        user=user,
-        model=prompt.model,
-        fallback=_fallback,
-    )
-    price = parsed.get("price")
-    try:
-        price_f = float(price) if price is not None else None
-    except (TypeError, ValueError):
-        price_f = _parse_price_from_text(truncated)
+        def _fallback() -> dict[str, Any]:
+            price = _parse_price_from_text(truncated, sku=sku)
+            return {
+                "price": price,
+                "currency": "USD",
+                "title": None,
+                "in_stock": None,
+                "fallback_used": True,
+            }
+
+        parsed, fb = complete_json(
+            system="Extract competitor product price as JSON only. If multiple products, use only the Target SKU.",
+            user=user,
+            model=prompt.model,
+            fallback=_fallback,
+        )
+        price = parsed.get("price")
+        try:
+            price_f = float(price) if price is not None else None
+        except (TypeError, ValueError):
+            price_f = _parse_price_from_text(truncated, sku=sku)
+        # Prefer structured SKU match when LLM returns a different price.
+        again = _parse_structured_competitor_price(raw_content or "", sku)
+        if again is not None:
+            price_f = again
+            parsed = {**parsed, "price": again, "parse_source": "structured_sku_override"}
+            fb = False
 
     with connect() as conn:
         with conn.cursor() as cur:
@@ -96,7 +321,7 @@ def parse_competitor(
         correlation_id=corr,
         entity_type="price_snapshot",
         entity_id=str(row["id"]) if row else None,
-        detail={"url": url, "price": price_f, "fallback_used": fb or parsed.get("fallback_used")},
+        detail={"url": url, "price": price_f, "fallback_used": fb or parsed.get("fallback_used"), "sku": sku},
     )
     return {
         "ok": True,
@@ -108,6 +333,7 @@ def parse_competitor(
         "title": parsed.get("title"),
         "fallback_used": bool(fb or parsed.get("fallback_used")),
         "captured_at": row["captured_at"].isoformat() if row and row.get("captured_at") else None,
+        "parse_source": parsed.get("parse_source") or ("llm" if not fb else "regex_fallback"),
     }
 
 
@@ -130,6 +356,11 @@ def recommend_price(
     min_margin = float(_cfg(flat, "min_margin_pct", "15"))
     strategy = strategy or {"name": "match_undercut", "undercut_pct": 2}
 
+    display = _product_display_meta(store_id, sku)
+    title = display["title"]
+    image_url = display["image_url"]
+    product_raw = display.get("product_raw") or {}
+
     with connect() as conn:
         with conn.cursor() as cur:
             if cost is None or current_price is None:
@@ -142,21 +373,25 @@ def recommend_price(
                     if cost is None and prod.get("cost") is not None:
                         cost = float(prod["cost"])
                     if current_price is None:
-                        raw = prod.get("raw") if isinstance(prod.get("raw"), dict) else {}
-                        try:
-                            current_price = float(
-                                raw.get("price") or raw.get("available") or current_price or 0
-                            )
-                        except (TypeError, ValueError):
-                            pass
+                        raw = prod.get("raw") if isinstance(prod.get("raw"), dict) else product_raw
+                        extracted = _extract_commerce_price(raw)
+                        if extracted is not None:
+                            current_price = extracted
+                if current_price is None:
+                    for platform in ("shopify", "woocommerce"):
+                        listing = _lookup_listing_raw(store_id, platform, sku)
+                        extracted = _extract_commerce_price(listing.get("raw") or {})
+                        if extracted is not None:
+                            current_price = extracted
+                            break
             cur.execute(
                 """
                 SELECT price, source_name, url, captured_at
                 FROM price_snapshots
-                WHERE store_id = %s AND (sku = %s OR sku IS NULL)
+                WHERE store_id = %s AND sku = %s
                   AND source_type = 'competitor' AND price IS NOT NULL
                 ORDER BY captured_at DESC
-                LIMIT 10
+                LIMIT 20
                 """,
                 (store_id, sku),
             )
@@ -167,11 +402,19 @@ def recommend_price(
     if cost is None:
         cost = round(current_price * 0.4, 2)
 
-    competitor_prices = [
-        {"price": float(s["price"]), "source": s.get("source_name"), "url": s.get("url")}
-        for s in snaps
-        if s.get("price") is not None
-    ]
+    # Newest quote per (source, url) — ignore stale wrong parses of the same competitor page.
+    competitor_prices: list[dict[str, Any]] = []
+    seen_sources: set[tuple[Any, Any]] = set()
+    for s in snaps:
+        if s.get("price") is None:
+            continue
+        key = (s.get("source_name"), s.get("url"))
+        if key in seen_sources:
+            continue
+        seen_sources.add(key)
+        competitor_prices.append(
+            {"price": float(s["price"]), "source": s.get("source_name"), "url": s.get("url")}
+        )
     prompt = load_prompt("pricing_recommend")
     user = prompt.render(
         min_margin_pct=str(min_margin),
@@ -184,25 +427,70 @@ def recommend_price(
     )
 
     floor = round(cost * (1 + min_margin / 100.0), 2)
+    undercut_pct = float(strategy.get("undercut_pct") or 2)
+    hold_band_pct = float(strategy.get("hold_band_pct") or 2)
+    allow_raise = _truthy(str(strategy.get("allow_raise_toward_competitor", "false")))
 
     def _fallback() -> dict[str, Any]:
-        if competitor_prices:
-            best = min(c["price"] for c in competitor_prices)
-            undercut = float(strategy.get("undercut_pct") or 2)
-            rec = max(floor, round(best * (1 - undercut / 100.0), 2))
-            reasoning = f"Undercut lowest competitor {best} by {undercut}% with margin floor {floor}"
-        else:
-            rec = max(floor, round(current_price * 0.98, 2))
-            reasoning = f"No competitor data; slight decrease with margin floor {floor}"
+        if not competitor_prices:
+            return {
+                "recommended_price": current_price,
+                "reasoning": "No competitor data; hold current price",
+                "strategy": "hold_no_competitor",
+                "action": "hold",
+                "fallback_used": True,
+            }
+        comp = min(float(c["price"]) for c in competitor_prices)
+        band = abs(current_price) * (hold_band_pct / 100.0) if current_price else 0.0
+        delta = comp - float(current_price)
+
+        if abs(delta) <= band:
+            return {
+                "recommended_price": float(current_price),
+                "reasoning": f"Competitor {comp} within {hold_band_pct}% of current {current_price}; hold",
+                "strategy": "hold_near_competitor",
+                "action": "hold",
+                "fallback_used": True,
+            }
+        if delta < 0:
+            rec = max(floor, round(comp * (1 - undercut_pct / 100.0), 2))
+            return {
+                "recommended_price": rec,
+                "reasoning": (
+                    f"Competitor {comp} below current {current_price}; "
+                    f"undercut by {undercut_pct}% → {rec} (floor {floor})"
+                ),
+                "strategy": strategy.get("name") or "match_undercut",
+                "action": "lower",
+                "fallback_used": True,
+            }
+        if allow_raise:
+            target = round(comp * (1 - undercut_pct / 100.0), 2)
+            if target > float(current_price):
+                rec = max(floor, min(target, float(comp) - 0.01))
+                return {
+                    "recommended_price": rec,
+                    "reasoning": (
+                        f"Competitor {comp} above current; allow_raise_toward_competitor "
+                        f"→ move toward undercut target {target}"
+                    ),
+                    "strategy": "raise_toward_competitor",
+                    "action": "raise",
+                    "fallback_used": True,
+                }
         return {
-            "recommended_price": rec,
-            "reasoning": reasoning,
-            "strategy": strategy.get("name") or "fallback_margin",
+            "recommended_price": float(current_price),
+            "reasoning": (
+                f"Competitor {comp} above current {current_price}; "
+                f"already competitive — hold (do not raise to undercut a higher list)"
+            ),
+            "strategy": "hold_already_competitive",
+            "action": "hold",
             "fallback_used": True,
         }
 
     parsed, fb = complete_json(
-        system="Return pricing recommendation JSON only.",
+        system="Return pricing recommendation JSON only. Follow hold-vs-undercut rules in the user prompt.",
         user=user,
         model=prompt.model,
         fallback=_fallback,
@@ -210,9 +498,41 @@ def recommend_price(
     try:
         rec_price = float(parsed.get("recommended_price"))
     except (TypeError, ValueError):
-        rec_price = float(_fallback()["recommended_price"])
+        fb_out = _fallback()
+        rec_price = float(fb_out["recommended_price"])
+        parsed = {**parsed, **fb_out}
         fb = True
     rec_price = max(floor, rec_price)
+
+    # Guard: block raise when competitor > current and allow_raise is false.
+    if competitor_prices and not allow_raise:
+        comp = min(float(c["price"]) for c in competitor_prices)
+        if comp > float(current_price) and rec_price > float(current_price):
+            rec_price = float(current_price)
+            parsed = {
+                **parsed,
+                "recommended_price": rec_price,
+                "action": "hold",
+                "strategy": "hold_already_competitive",
+                "reasoning": (
+                    (parsed.get("reasoning") or "")
+                    + " | Guard: blocked raise while competitor is higher than current."
+                ).strip(" |"),
+            }
+
+    action_l = str(parsed.get("action") or "").lower()
+    if action_l not in {"lower", "hold", "raise"}:
+        if abs(float(rec_price) - float(current_price)) < 0.005:
+            action_l = "hold"
+        elif float(rec_price) < float(current_price):
+            action_l = "lower"
+        else:
+            action_l = "raise"
+    parsed["action"] = action_l
+    rec_status = "held" if action_l == "hold" else "pending"
+
+    comp_prices = [float(c["price"]) for c in competitor_prices if c.get("price") is not None]
+    competitor_price = min(comp_prices) if comp_prices else None
 
     with connect() as conn:
         with conn.cursor() as cur:
@@ -222,7 +542,7 @@ def recommend_price(
                     store_id, sku, current_price, recommended_price, currency, reasoning,
                     strategy, status, correlation_id, fallback_used, meta
                 )
-                VALUES (%s, %s, %s, %s, 'USD', %s, %s, 'pending', %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, 'USD', %s, %s, %s, %s, %s, %s::jsonb)
                 RETURNING id, created_at
                 """,
                 (
@@ -232,13 +552,16 @@ def recommend_price(
                     rec_price,
                     parsed.get("reasoning") or "",
                     parsed.get("strategy") or strategy.get("name"),
+                    rec_status,
                     corr,
                     fb or bool(parsed.get("fallback_used")),
                     json.dumps(
                         {
                             "competitor_prices": competitor_prices,
+                            "competitor_price": competitor_price,
                             "min_margin_pct": min_margin,
                             "floor": floor,
+                            "action": action_l,
                         }
                     ),
                 ),
@@ -256,7 +579,14 @@ def recommend_price(
         correlation_id=corr,
         entity_type="pricing_recommendation",
         entity_id=str(row["id"]),
-        detail={"sku": sku, "recommended_price": rec_price, "fallback_used": fb},
+        detail={
+            "sku": sku,
+            "recommended_price": rec_price,
+            "fallback_used": fb,
+            "action": action_l,
+            "status": rec_status,
+            "competitor_price": competitor_price,
+        },
     )
     return {
         "ok": True,
@@ -264,11 +594,17 @@ def recommend_price(
         "recommendation_id": str(row["id"]),
         "store_id": store_id,
         "sku": sku,
+        "title": title,
+        "image_url": image_url,
         "current_price": current_price,
         "recommended_price": rec_price,
+        "competitor_price": competitor_price,
+        "competitor_prices": competitor_prices,
         "reasoning": parsed.get("reasoning"),
         "strategy": parsed.get("strategy"),
-        "status": "pending",
+        "action": action_l,
+        "status": rec_status,
+        "needs_approval": action_l != "hold",
         "fallback_used": bool(fb or parsed.get("fallback_used")),
         "should_alert_slack": slack_gate,
         "mode": cfg["mode"],
@@ -312,20 +648,26 @@ def pricing_action(
                     else f"already_{row['status']}",
                 }
 
+            live_results: list[dict[str, Any]] = []
             if action_l == "reject":
                 new_status = "rejected"
                 writeback_status = "none"
             else:
-                # approve
-                auto_apply = _truthy(cfg["flat"].get("auto_apply", "false"))
+                # Approve: live writeback only in production when writeback_enabled.
                 if cfg["mode"] != "production":
                     new_status = "approved"
                     writeback_status = "skipped_test_mode"
-                elif not auto_apply:
+                elif not _truthy(cfg["flat"].get("writeback_enabled", "true")):
                     new_status = "approved"
                     writeback_status = "skipped_disabled"
                 else:
-                    # Demo writeback: stamp own price snapshot (no live Shopify Admin API).
+                    live_results = _apply_live_price_writeback(
+                        store_id=str(row["store_id"]),
+                        sku=str(row["sku"]),
+                        price=float(row["recommended_price"]),
+                        currency=row.get("currency") or "USD",
+                        correlation_id=corr,
+                    )
                     cur.execute(
                         """
                         INSERT INTO price_snapshots (
@@ -343,12 +685,23 @@ def pricing_action(
                                     "recommendation_id": recommendation_id,
                                     "actor": actor,
                                     "correlation_id": corr,
+                                    "live_writebacks": live_results,
                                 }
                             ),
                         ),
                     )
                     new_status = "applied"
-                    writeback_status = "applied"
+                    live_statuses = [r.get("live_status") for r in live_results]
+                    if any(s == "ok" for s in live_statuses):
+                        writeback_status = (
+                            "applied"
+                            if all(s in {"ok", "skipped_no_credentials", "sot_only"} for s in live_statuses)
+                            else "partial"
+                        )
+                    elif all(s in {"skipped_no_credentials", "sot_only"} for s in live_statuses):
+                        writeback_status = "applied_sot_only"
+                    else:
+                        writeback_status = "failed" if any(s == "error" for s in live_statuses) else "applied_sot_only"
 
             cur.execute(
                 """
@@ -366,6 +719,7 @@ def pricing_action(
                             "action": action_l,
                             "writeback_status": writeback_status,
                             "correlation_id": corr,
+                            "live_writebacks": live_results,
                         }
                     ),
                     recommendation_id,
@@ -379,7 +733,7 @@ def pricing_action(
         correlation_id=corr,
         entity_type="pricing_recommendation",
         entity_id=recommendation_id,
-        detail={"status": new_status, "writeback_status": writeback_status, "actor": actor},
+        detail={"status": new_status, "writeback_status": writeback_status, "actor": actor, "live_writebacks": live_results},
     )
     return {
         "ok": True,
@@ -388,6 +742,7 @@ def pricing_action(
         "sku": updated["sku"],
         "status": new_status,
         "writeback_status": writeback_status,
+        "live_writebacks": live_results,
         "recommended_price": float(updated["recommended_price"]) if updated.get("recommended_price") else None,
         "mode": cfg["mode"],
     }
@@ -471,7 +826,6 @@ def insights_churn(*, store_id: str, correlation_id: str | None = None) -> dict[
             for r in cur.fetchall() or []:
                 rec = int(r.get("rfm_recency") or 999)
                 freq = int(r.get("rfm_frequency") or 0)
-                # 0 = safe, 1 = likely churn
                 score = min(1.0, max(0.0, (rec / 180.0) * (1.0 if freq < 2 else 0.5)))
                 cur.execute(
                     "UPDATE customers SET churn_score = %s, updated_at = NOW() WHERE id = %s",
@@ -667,7 +1021,7 @@ def marketing_advance(
                     send_status = "skipped_test_mode"
                     new_status = "skipped_test_mode" if step >= 1 else "in_progress"
                 else:
-                    send_status = "queued_sendgrid"
+                    send_status = "queued_resend"
                     new_status = "completed" if step >= 2 else "in_progress"
 
                 next_at = _now() + timedelta(hours=24) if new_status == "in_progress" else None
@@ -702,7 +1056,7 @@ def marketing_advance(
                         "subject": copy["subject"],
                         "body": copy["body"],
                         "cta": copy["cta"],
-                        "should_send_email": allow_send and send_status == "queued_sendgrid",
+                        "should_send_email": allow_send and send_status == "queued_resend",
                     }
                 )
 
@@ -738,5 +1092,14 @@ def list_competitor_targets(store_id: str | None = None) -> dict[str, Any]:
         "ok": True,
         "store_id": store_id or demo_store or None,
         "targets": urls,
-        "sku": _cfg(cfg["flat"], "demo_pricing_sku", "TEE-BLACK-M"),
+        "sku": _cfg(cfg["flat"], "demo_pricing_sku", "sku-managed-1"),
+        "skus": [
+            s.strip()
+            for s in _cfg(
+                cfg["flat"],
+                "demo_pricing_skus",
+                "sku-managed-1,SNOWBOARD-LIQUID",
+            ).split(",")
+            if s.strip()
+        ],
     }

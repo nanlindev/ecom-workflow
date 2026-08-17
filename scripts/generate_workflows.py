@@ -191,7 +191,7 @@ def execute_workflow(
         "position": position,
         "id": nid(name),
         "name": name,
-        "notes": f"Explicit workflowInputs → {target_workflow}. Re-select target after import if needed.",
+        "notes": f"Map Execute Workflow inputs → {target_workflow}.",
         "notesInFlow": True,
     }
 
@@ -334,19 +334,83 @@ def save_workflow(name: str, nodes: list, connections: dict, *, error_workflow: 
     return path
 
 
-# --- JS snippets ---
+# JS snippets
 
 ERROR_EXTRACT_JS = r"""
-const err = $input.item.json;
+const err = $input.item.json || {};
 const execution = err.execution || {};
 const error = err.error || {};
+
+function asText(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') {
+    const t = v.trim();
+    return t && t !== '{}' && t !== '[object Object]' ? t : '';
+  }
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return '';
+}
+
+function pickMessage(e, depth = 0) {
+  if (e == null || depth > 4) return '';
+  if (typeof e === 'string') return asText(e);
+  if (typeof e !== 'object') return String(e);
+  // n8n sometimes sets message to {} / nested Error-like objects
+  const nested = [
+    e.message,
+    e.description,
+    e.error,
+    e.cause,
+    e.reason,
+    e.statusMessage,
+    e.messages?.[0],
+    e.response?.body?.message,
+    e.response?.data?.message,
+    e.context?.description,
+    e.context?.message,
+  ];
+  for (const c of nested) {
+    const direct = asText(c);
+    if (direct) return direct;
+    if (c && typeof c === 'object') {
+      const inner = pickMessage(c, depth + 1);
+      if (inner) return inner;
+    }
+  }
+  if (typeof e.name === 'string' && e.name && e.name !== 'Error' && e.name !== 'NodeOperationError') {
+    return e.name;
+  }
+  try {
+    const s = JSON.stringify(e);
+    if (s && s !== '{}' && s !== 'null') return s.slice(0, 500);
+  } catch (_) {}
+  return '';
+}
+
+const nodeName =
+  error.node?.name ||
+  (typeof error.node === 'string' ? error.node : null) ||
+  err.node?.name ||
+  execution.lastNodeExecuted ||
+  'unknown';
+
+const message =
+  pickMessage(error) ||
+  pickMessage(err) ||
+  asText(err.message) ||
+  'unknown_error';
+
 return {
-  workflow: err.workflow?.name || 'unknown',
-  execution_id: execution.id || '',
-  node: error.node?.name || 'unknown',
-  message: error.message || JSON.stringify(error),
-  stack: error.stack || '',
-  correlation_id: error.context?.correlation_id || execution.customData?.correlation_id || '',
+  workflow: err.workflow?.name || err.workflow || 'unknown',
+  execution_id: String(execution.id || err.executionId || ''),
+  node: typeof nodeName === 'string' ? nodeName : 'unknown',
+  message,
+  stack: error.stack || err.stack || '',
+  correlation_id:
+    error.context?.correlation_id ||
+    execution.customData?.correlation_id ||
+    err.correlation_id ||
+    '',
   retry_suggestion: 'manual',
   timestamp: new Date().toISOString(),
   _metadata: { processing_stage: 'global_error_logged', severity: 'critical' },
@@ -406,33 +470,75 @@ return {
 
 PREPARE_INGEST_BODY_JS = r"""
 const crypto = require('crypto');
-const item = $input.item.json || {};
-const headers = item.headers || {};
-const rawBody =
-  item.rawBody ||
-  (typeof item.body === 'string' ? item.body : JSON.stringify(item.body ?? item));
+const item = $input.item;
+const json = item.json || {};
+const headers = json.headers || {};
+
+// Prefer webhook rawBody / binary for HMAC (required for verify).
+let rawBody = null;
+if (typeof json.rawBody === 'string' && json.rawBody.length) {
+  rawBody = json.rawBody;
+} else if (item.binary && item.binary.data) {
+  const bin = item.binary.data;
+  rawBody = Buffer.from(bin.data, bin.encoding || 'base64').toString('utf8');
+} else if (typeof json.body === 'string') {
+  rawBody = json.body;
+}
+
+// Do not HMAC-verify a JSON.stringify(object) stand-in when raw body is missing.
+const canVerify = typeof rawBody === 'string' && rawBody.length > 0;
+if (!canVerify) {
+  rawBody = JSON.stringify(json.body ?? {});
+}
 
 const correlation_id =
   headers['x-correlation-id'] ||
   headers['X-Correlation-Id'] ||
   crypto.randomUUID();
 
+const isWoo = !!(
+  headers['x-wc-webhook-topic'] ||
+  headers['X-WC-Webhook-Topic'] ||
+  headers['x-wc-webhook-signature'] ||
+  headers['X-WC-Webhook-Signature'] ||
+  String(headers['user-agent'] || '').includes('WooCommerce')
+);
+const platform = isWoo ? 'woocommerce' : 'shopify';
+
 const store_key =
   $env.ECOM_DEMO_STORE_KEY ||
-  (headers['x-shopify-shop-domain'] || '').replace('.myshopify.com', '') ||
+  (platform === 'shopify'
+    ? (headers['x-shopify-shop-domain'] || '').replace('.myshopify.com', '')
+    : ($env.ECOM_DEMO_WOO_STORE_KEY || '')) ||
   'demo-shopify';
 
 return {
   correlation_id,
   store_key,
+  platform,
+  is_woo: isWoo,
   raw_body: rawBody,
   headers,
-  skip_verify: false,
+  // Skip verify when raw body unavailable (avoids spurious 401).
+  skip_verify: !canVerify,
 };
 """
 
 HANDLE_INGEST_HTTP_JS = error_message_prelude("Ingest sidecar call failed") + r"""
-const prep = $('Prepare Ingest Request').item.json;
+function getPrep() {
+  const names = [
+    'Prepare Shopify Ingest Request',
+    'Prepare Woo Ingest Request',
+    'Prepare Ingest Request',
+  ];
+  for (const name of names) {
+    try {
+      return $(name).item.json;
+    } catch (e) {}
+  }
+  return {};
+}
+const prep = getPrep();
 return {
   ...prep,
   ok: false,
@@ -445,23 +551,40 @@ return {
 """
 
 NORMALIZE_INGEST_RESULT_JS = r"""
-const prep = $('Prepare Ingest Request').item.json;
+function getPrep() {
+  const names = [
+    'Prepare Shopify Ingest Request',
+    'Prepare Woo Ingest Request',
+    'Prepare Ingest Request',
+  ];
+  for (const name of names) {
+    try {
+      return $(name).item.json;
+    } catch (e) {}
+  }
+  return {};
+}
+
+const prep = getPrep();
 const res = $input.item.json || {};
 const body = res.body && typeof res.body === 'object' ? res.body : res;
 const eventType = body.event_type || '';
 const primary = body.entities?.primary_id || '';
+const entities = body.entities || {};
+
 return {
   ...prep,
   ...body,
   correlation_id: body.correlation_id || prep.correlation_id,
   signature_valid: body.signature_valid !== false && body.ok !== false,
   dispatch: body.dispatch || { inventory: false, order: false, returns: false },
-  sku: body.entities?.sku || '',
-  order_id: eventType === 'order' ? primary : '',
+  sku: entities.sku || '',
+  order_id: eventType === 'order' ? primary : (entities.order_id || ''),
   return_id: eventType === 'return' ? primary : '',
-  external_order_id: body.entities?.external_order_id || '',
-  external_return_id: body.entities?.external_return_id || '',
-  amount: body.entities?.amount ?? null,
+  external_order_id: entities.external_order_id || '',
+  external_return_id: entities.external_return_id || '',
+  amount: entities.amount ?? null,
+  reason: entities.reason || '',
   days_since_order: Number(body.days_since_order ?? 0),
 };
 """
@@ -512,6 +635,10 @@ const prep = $('Prepare Inventory Sync Body').item.json;
 const res = $input.item.json || {};
 const body = res.body && typeof res.body === 'object' ? res.body : res;
 const drifts = body.drifts || [];
+const channels = (body.channel_writebacks || [])
+  .map(c => `${c.slave_channel || c.channel}=${c.live_status || 'n/a'}`)
+  .slice(0, 5)
+  .join(', ');
 return {
   ...prep,
   ...body,
@@ -522,7 +649,7 @@ return {
     `Master: ${body.master_channel || 'shopify'}`,
     `Drifts: ${drifts.length}`,
     drifts.slice(0, 5).map(d => `${d.sku}: ${d.slave_channel}=${d.slave_available} vs master=${d.master_available}`).join('\n'),
-    `Writeback: ${body.writeback_status || 'n/a'}`,
+    `Writeback: ${body.writeback_status || 'n/a'}${channels ? ` (${channels})` : ''}`,
     `Correlation: ${body.correlation_id || prep.correlation_id}`,
   ].filter(Boolean).join('\n'),
 };
@@ -635,7 +762,7 @@ INGEST_TO_INVENTORY = {
 
 INGEST_TO_ORDER = {
     "store_id": "={{ $json.store_id }}",
-    "order_id": "={{ $json.order_id || $json.entities?.primary_id || '' }}",
+    "order_id": "={{ $json.order_id || $json.entities?.order_id || ($json.event_type === 'order' ? ($json.entities?.primary_id || '') : '') || '' }}",
     "external_order_id": "={{ $json.external_order_id || $json.entities?.external_order_id || '' }}",
     "new_status": "={{ $json.new_status || '' }}",
     "correlation_id": "={{ $json.correlation_id }}",
@@ -645,7 +772,7 @@ INGEST_TO_RETURNS = {
     "store_id": "={{ $json.store_id }}",
     "return_id": "={{ $json.return_id || $json.entities?.primary_id || '' }}",
     "external_return_id": "={{ $json.external_return_id || $json.entities?.external_return_id || '' }}",
-    "order_id": "={{ '' }}",
+    "order_id": "={{ $json.order_id || $json.entities?.order_id || '' }}",
     "amount": "={{ Number($json.amount ?? $json.entities?.amount ?? 0) }}",
     "days_since_order": "={{ Number($json.days_since_order ?? 0) }}",
     "reason": "={{ $json.reason || $json.entities?.reason || '' }}",
@@ -738,49 +865,73 @@ def build_error_handler() -> None:
 
 
 def build_platform_ingest() -> None:
+    # Prepare before merge so webhook binary/rawBody is not dropped.
     nodes = [
-        webhook_node("Shopify Webhook", [0, 0], "ecom-shopify"),
+        webhook_node("Shopify Webhook", [0, -120], "ecom-shopify"),
+        webhook_node("Woo Webhook", [0, 120], "ecom-woo"),
         code_node(
-            "Prepare Ingest Request",
+            "Prepare Shopify Ingest Request",
             PREPARE_INGEST_BODY_JS,
-            [220, 0],
-            notes="Assign correlation_id early; forward raw body + headers for HMAC.",
+            [220, -120],
+            notes="HMAC prep (Shopify).",
         ),
+        code_node(
+            "Prepare Woo Ingest Request",
+            PREPARE_INGEST_BODY_JS,
+            [220, 120],
+            notes="HMAC prep (Woo; ping acked in sidecar).",
+        ),
+        merge_node("Merge Ingest Triggers", [440, 0], mode="append"),
+        if_bool_node("Is Woo Ingest?", [640, 0], "={{ $json.is_woo }}"),
         http_json_post(
             "Sidecar Ingest Shopify",
-            [440, 0],
+            [860, -120],
             f"{SIDECAR}/ingest/shopify",
             "={{ JSON.stringify({ raw_body: $json.raw_body, headers: $json.headers, store_key: $json.store_key, correlation_id: $json.correlation_id, skip_verify: $json.skip_verify }) }}",
-            notes="Verify HMAC → normalize → idempotent PG upsert.",
+            notes="Shopify ingest → PG upsert.",
         ),
-        code_node("Handle Ingest HTTP Error", HANDLE_INGEST_HTTP_JS, [440, 200]),
-        code_node("Normalize Ingest Result", NORMALIZE_INGEST_RESULT_JS, [660, 0]),
-        if_bool_node("Signature Valid?", [880, 0], "={{ $json.signature_valid }}"),
+        http_json_post(
+            "Sidecar Ingest Woo",
+            [860, 120],
+            f"{SIDECAR}/ingest/woocommerce",
+            "={{ JSON.stringify({ raw_body: $json.raw_body, headers: $json.headers, store_key: $json.store_key, correlation_id: $json.correlation_id, skip_verify: $json.skip_verify }) }}",
+            notes="Woo ingest → PG upsert.",
+        ),
+        code_node("Handle Ingest HTTP Error", HANDLE_INGEST_HTTP_JS, [860, 300]),
+        code_node("Normalize Ingest Result", NORMALIZE_INGEST_RESULT_JS, [1080, 0]),
+        if_bool_node("Signature Valid?", [1300, 0], "={{ $json.signature_valid }}"),
         respond_to_webhook_node(
             "Respond 401",
-            [1100, -160],
+            [1520, -160],
             response_code=401,
-            response_body='={{ { "ok": false, "error": "invalid_signature" } }}',
+            response_body='{ "ok": false, "error": "invalid_signature" }',
         ),
         respond_to_webhook_node(
             "Respond 200",
-            [1100, 0],
+            [1520, 0],
             response_code=200,
-            response_body='={{ { "ok": true, "correlation_id": $json.correlation_id, "event_type": $json.event_type } }}',
+            response_body='={\n  "ok": true,\n  "correlation_id": "={{ $json.correlation_id }}",\n  "event_type": "={{ $json.event_type }}",\n  "platform": "={{ $json.platform }}"\n}',
         ),
-        if_bool_node("Dispatch Inventory?", [1320, 0], "={{ $json.dispatch.inventory }}"),
-        execute_workflow("Execute Inventory Sync", [1540, -80], "Ecom Inventory Sync", inputs=INGEST_TO_INVENTORY),
-        if_bool_node("Dispatch Order?", [1320, 160], "={{ $json.dispatch.order }}"),
-        execute_workflow("Execute Order Tracker", [1540, 160], "Ecom Order Tracker", inputs=INGEST_TO_ORDER),
-        if_bool_node("Dispatch Returns?", [1320, 320], "={{ $json.dispatch.returns }}"),
-        execute_workflow("Execute Returns Automation", [1540, 320], "Ecom Returns Automation", inputs=INGEST_TO_RETURNS),
-        noop("No Downstream", [1540, 480]),
+        if_bool_node("Dispatch Inventory?", [1740, 0], "={{ $json.dispatch.inventory }}"),
+        execute_workflow("Execute Inventory Sync", [1960, -80], "Ecom Inventory Sync", inputs=INGEST_TO_INVENTORY),
+        if_bool_node("Dispatch Order?", [1740, 160], "={{ $json.dispatch.order }}"),
+        execute_workflow("Execute Order Tracker", [1960, 160], "Ecom Order Tracker", inputs=INGEST_TO_ORDER),
+        if_bool_node("Dispatch Returns?", [1740, 320], "={{ $json.dispatch.returns }}"),
+        execute_workflow("Execute Returns Automation", [1960, 320], "Ecom Returns Automation", inputs=INGEST_TO_RETURNS),
+        noop("No Downstream", [1960, 480]),
     ]
     conn: dict = {}
-    connect(conn, "Shopify Webhook", "Prepare Ingest Request")
-    connect(conn, "Prepare Ingest Request", "Sidecar Ingest Shopify")
+    connect(conn, "Shopify Webhook", "Prepare Shopify Ingest Request")
+    connect(conn, "Woo Webhook", "Prepare Woo Ingest Request")
+    connect(conn, "Prepare Shopify Ingest Request", "Merge Ingest Triggers", dst_input=0)
+    connect(conn, "Prepare Woo Ingest Request", "Merge Ingest Triggers", dst_input=1)
+    connect(conn, "Merge Ingest Triggers", "Is Woo Ingest?")
+    connect(conn, "Is Woo Ingest?", "Sidecar Ingest Woo", src_output=0)
+    connect(conn, "Is Woo Ingest?", "Sidecar Ingest Shopify", src_output=1)
     connect_error(conn, "Sidecar Ingest Shopify", "Handle Ingest HTTP Error")
+    connect_error(conn, "Sidecar Ingest Woo", "Handle Ingest HTTP Error")
     connect(conn, "Sidecar Ingest Shopify", "Normalize Ingest Result")
+    connect(conn, "Sidecar Ingest Woo", "Normalize Ingest Result")
     connect(conn, "Handle Ingest HTTP Error", "Normalize Ingest Result")
     connect(conn, "Normalize Ingest Result", "Signature Valid?")
     connect(conn, "Signature Valid?", "Respond 200", src_output=0)
@@ -815,7 +966,7 @@ def build_inventory_sync() -> None:
             [880, 80],
             f"{SIDECAR}/inventory/sync",
             "={{ JSON.stringify({ store_id: $json.store_id || null, store_key: $json.store_key || null, sku: $json.sku || null, correlation_id: $json.correlation_id, slave_levels: $json.slave_levels }) }}",
-            notes="Master channel wins; test mode sets writeback_status=skipped_test_mode.",
+            notes="Master wins; live writeback if creds else SoT-only.",
         ),
         code_node("Handle Inventory HTTP Error", HANDLE_INVENTORY_HTTP_JS, [880, 260]),
         code_node("Flatten Inventory Result", FLATTEN_INVENTORY_RESULT_JS, [1100, 80]),
@@ -931,6 +1082,9 @@ def main() -> None:
     from generate_workflows_p2 import build_all_p2
 
     build_all_p2()
+    from generate_workflows_p3 import build_all_p3
+
+    build_all_p3()
 
 
 if __name__ == "__main__":

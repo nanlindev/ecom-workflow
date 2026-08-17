@@ -14,29 +14,116 @@
       "typeVersion": 2,
       "position": [
         0,
-        0
+        -120
       ],
-      "id": "67f88a82-8d0a-4bb9-b579-b48e6947830e",
+      "id": "1e02914c-3f60-41d4-9bb3-c84026cdb02b",
       "name": "Shopify Webhook",
-      "webhookId": "932dde40-d4d0-4a36-b654-b42e90f83dee",
+      "webhookId": "9fd6be4d-c1d9-4b6b-8d62-1313b2329a1b",
+      "notes": "Shopify webhook ingress; rawBody required for HMAC verification.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "path": "ecom-woo",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        120
+      ],
+      "id": "ebf6ff13-8f14-4af1-a7e4-e91fe604d7af",
+      "name": "Woo Webhook",
+      "webhookId": "3fdf4ace-06c3-4e2d-ae56-3722b1122be2",
       "notes": "Shopify webhook ingress; rawBody required for HMAC verification.",
       "notesInFlow": true
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "\nconst crypto = require('crypto');\nconst item = $input.item.json || {};\nconst headers = item.headers || {};\nconst rawBody =\n  item.rawBody ||\n  (typeof item.body === 'string' ? item.body : JSON.stringify(item.body ?? item));\n\nconst correlation_id =\n  headers['x-correlation-id'] ||\n  headers['X-Correlation-Id'] ||\n  crypto.randomUUID();\n\nconst store_key =\n  $env.ECOM_DEMO_STORE_KEY ||\n  (headers['x-shopify-shop-domain'] || '').replace('.myshopify.com', '') ||\n  'demo-shopify';\n\nreturn {\n  correlation_id,\n  store_key,\n  raw_body: rawBody,\n  headers,\n  skip_verify: false,\n};\n"
+        "jsCode": "\nconst crypto = require('crypto');\nconst item = $input.item;\nconst json = item.json || {};\nconst headers = json.headers || {};\n\n// Prefer webhook rawBody / binary for HMAC (required for verify).\nlet rawBody = null;\nif (typeof json.rawBody === 'string' && json.rawBody.length) {\n  rawBody = json.rawBody;\n} else if (item.binary && item.binary.data) {\n  const bin = item.binary.data;\n  rawBody = Buffer.from(bin.data, bin.encoding || 'base64').toString('utf8');\n} else if (typeof json.body === 'string') {\n  rawBody = json.body;\n}\n\n// Do not HMAC-verify a JSON.stringify(object) stand-in when raw body is missing.\nconst canVerify = typeof rawBody === 'string' && rawBody.length > 0;\nif (!canVerify) {\n  rawBody = JSON.stringify(json.body ?? {});\n}\n\nconst correlation_id =\n  headers['x-correlation-id'] ||\n  headers['X-Correlation-Id'] ||\n  crypto.randomUUID();\n\nconst isWoo = !!(\n  headers['x-wc-webhook-topic'] ||\n  headers['X-WC-Webhook-Topic'] ||\n  headers['x-wc-webhook-signature'] ||\n  headers['X-WC-Webhook-Signature'] ||\n  String(headers['user-agent'] || '').includes('WooCommerce')\n);\nconst platform = isWoo ? 'woocommerce' : 'shopify';\n\nconst store_key =\n  $env.ECOM_DEMO_STORE_KEY ||\n  (platform === 'shopify'\n    ? (headers['x-shopify-shop-domain'] || '').replace('.myshopify.com', '')\n    : ($env.ECOM_DEMO_WOO_STORE_KEY || '')) ||\n  'demo-shopify';\n\nreturn {\n  correlation_id,\n  store_key,\n  platform,\n  is_woo: isWoo,\n  raw_body: rawBody,\n  headers,\n  // Skip verify when raw body unavailable (avoids spurious 401).\n  skip_verify: !canVerify,\n};\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         220,
+        -120
+      ],
+      "id": "a9d856c3-7f9c-41a4-8214-376b7666151e",
+      "name": "Prepare Shopify Ingest Request",
+      "notes": "HMAC prep (Shopify).",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst crypto = require('crypto');\nconst item = $input.item;\nconst json = item.json || {};\nconst headers = json.headers || {};\n\n// Prefer webhook rawBody / binary for HMAC (required for verify).\nlet rawBody = null;\nif (typeof json.rawBody === 'string' && json.rawBody.length) {\n  rawBody = json.rawBody;\n} else if (item.binary && item.binary.data) {\n  const bin = item.binary.data;\n  rawBody = Buffer.from(bin.data, bin.encoding || 'base64').toString('utf8');\n} else if (typeof json.body === 'string') {\n  rawBody = json.body;\n}\n\n// Do not HMAC-verify a JSON.stringify(object) stand-in when raw body is missing.\nconst canVerify = typeof rawBody === 'string' && rawBody.length > 0;\nif (!canVerify) {\n  rawBody = JSON.stringify(json.body ?? {});\n}\n\nconst correlation_id =\n  headers['x-correlation-id'] ||\n  headers['X-Correlation-Id'] ||\n  crypto.randomUUID();\n\nconst isWoo = !!(\n  headers['x-wc-webhook-topic'] ||\n  headers['X-WC-Webhook-Topic'] ||\n  headers['x-wc-webhook-signature'] ||\n  headers['X-WC-Webhook-Signature'] ||\n  String(headers['user-agent'] || '').includes('WooCommerce')\n);\nconst platform = isWoo ? 'woocommerce' : 'shopify';\n\nconst store_key =\n  $env.ECOM_DEMO_STORE_KEY ||\n  (platform === 'shopify'\n    ? (headers['x-shopify-shop-domain'] || '').replace('.myshopify.com', '')\n    : ($env.ECOM_DEMO_WOO_STORE_KEY || '')) ||\n  'demo-shopify';\n\nreturn {\n  correlation_id,\n  store_key,\n  platform,\n  is_woo: isWoo,\n  raw_body: rawBody,\n  headers,\n  // Skip verify when raw body unavailable (avoids spurious 401).\n  skip_verify: !canVerify,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        120
+      ],
+      "id": "2e6fdc8a-a8e1-40f3-9b39-a2c22c1ea498",
+      "name": "Prepare Woo Ingest Request",
+      "notes": "HMAC prep (Woo; ping acked in sidecar).",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        440,
         0
       ],
-      "id": "4f93eef7-d805-4b7f-a45d-44918614576a",
-      "name": "Prepare Ingest Request",
-      "notes": "Assign correlation_id early; forward raw body + headers for HMAC.",
+      "id": "0a285577-289c-4f7c-bd01-763444d253bc",
+      "name": "Merge Ingest Triggers",
+      "notes": "Merge multi-source inventory observations before master conflict resolution.",
       "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "31958e63-14e5-48cc-b5dd-e15b445ece29",
+              "leftValue": "={{ $json.is_woo }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        640,
+        0
+      ],
+      "id": "3e3d62d9-9301-4793-b7c7-3075328a081d",
+      "name": "Is Woo Ingest?"
     },
     {
       "parameters": {
@@ -61,44 +148,79 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        440,
-        0
+        860,
+        -120
       ],
-      "id": "1ecbdcd6-fe61-44f0-8399-b07fe4f487ac",
+      "id": "34e1eded-d7af-43f0-b259-f183875e60fb",
       "name": "Sidecar Ingest Shopify",
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000,
       "onError": "continueErrorOutput",
-      "notes": "Verify HMAC → normalize → idempotent PG upsert.",
+      "notes": "Shopify ingest → PG upsert.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ecom_python_ai:8001/ingest/woocommerce",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ raw_body: $json.raw_body, headers: $json.headers, store_key: $json.store_key, correlation_id: $json.correlation_id, skip_verify: $json.skip_verify }) }}",
+        "options": {
+          "timeout": 45000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Correlation-Id",
+              "value": "={{ $json.correlation_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        860,
+        120
+      ],
+      "id": "a504e68b-29dd-4763-b1d5-3d03a0d007cc",
+      "name": "Sidecar Ingest Woo",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "Woo ingest → PG upsert.",
       "notesInFlow": true
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Ingest sidecar call failed';\n\nconst prep = $('Prepare Ingest Request').item.json;\nreturn {\n  ...prep,\n  ok: false,\n  signature_valid: false,\n  ingest_error_message: errorMessage,\n  http_status: 502,\n  dispatch: { inventory: false, order: false, returns: false },\n  _metadata: { processing_stage: 'ingest_http_failed', severity: 'high' },\n};\n"
+        "jsCode": "const item = $input.item;\nconst errJson = item.json || {};\nconst errorObj = item.error || errJson.error || {};\nconst errorMessage =\n  errorObj.message ||\n  errorObj.description ||\n  errJson.message ||\n  errJson.description ||\n  (typeof errJson.error === 'string' ? errJson.error : null) ||\n  'Ingest sidecar call failed';\n\nfunction getPrep() {\n  const names = [\n    'Prepare Shopify Ingest Request',\n    'Prepare Woo Ingest Request',\n    'Prepare Ingest Request',\n  ];\n  for (const name of names) {\n    try {\n      return $(name).item.json;\n    } catch (e) {}\n  }\n  return {};\n}\nconst prep = getPrep();\nreturn {\n  ...prep,\n  ok: false,\n  signature_valid: false,\n  ingest_error_message: errorMessage,\n  http_status: 502,\n  dispatch: { inventory: false, order: false, returns: false },\n  _metadata: { processing_stage: 'ingest_http_failed', severity: 'high' },\n};\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        440,
-        200
+        860,
+        300
       ],
-      "id": "ac725615-c9c8-4a01-9806-85ef5d9a80c2",
+      "id": "ddcb4ea8-f32c-4c0e-876e-01a2e8f8188c",
       "name": "Handle Ingest HTTP Error"
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "\nconst prep = $('Prepare Ingest Request').item.json;\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst eventType = body.event_type || '';\nconst primary = body.entities?.primary_id || '';\nreturn {\n  ...prep,\n  ...body,\n  correlation_id: body.correlation_id || prep.correlation_id,\n  signature_valid: body.signature_valid !== false && body.ok !== false,\n  dispatch: body.dispatch || { inventory: false, order: false, returns: false },\n  sku: body.entities?.sku || '',\n  order_id: eventType === 'order' ? primary : '',\n  return_id: eventType === 'return' ? primary : '',\n  external_order_id: body.entities?.external_order_id || '',\n  external_return_id: body.entities?.external_return_id || '',\n  amount: body.entities?.amount ?? null,\n  days_since_order: Number(body.days_since_order ?? 0),\n};\n"
+        "jsCode": "\nfunction getPrep() {\n  const names = [\n    'Prepare Shopify Ingest Request',\n    'Prepare Woo Ingest Request',\n    'Prepare Ingest Request',\n  ];\n  for (const name of names) {\n    try {\n      return $(name).item.json;\n    } catch (e) {}\n  }\n  return {};\n}\n\nconst prep = getPrep();\nconst res = $input.item.json || {};\nconst body = res.body && typeof res.body === 'object' ? res.body : res;\nconst eventType = body.event_type || '';\nconst primary = body.entities?.primary_id || '';\nconst entities = body.entities || {};\n\nreturn {\n  ...prep,\n  ...body,\n  correlation_id: body.correlation_id || prep.correlation_id,\n  signature_valid: body.signature_valid !== false && body.ok !== false,\n  dispatch: body.dispatch || { inventory: false, order: false, returns: false },\n  sku: entities.sku || '',\n  order_id: eventType === 'order' ? primary : (entities.order_id || ''),\n  return_id: eventType === 'return' ? primary : '',\n  external_order_id: entities.external_order_id || '',\n  external_return_id: entities.external_return_id || '',\n  amount: entities.amount ?? null,\n  reason: entities.reason || '',\n  days_since_order: Number(body.days_since_order ?? 0),\n};\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        660,
+        1080,
         0
       ],
-      "id": "bc3e7cd3-4259-4962-ad54-94fb95c41075",
+      "id": "ef2eba11-bbbd-4406-8720-b1b87ee544e4",
       "name": "Normalize Ingest Result"
     },
     {
@@ -112,7 +234,7 @@
           },
           "conditions": [
             {
-              "id": "78dfbbcc-a96a-40bb-af50-7961a348beb8",
+              "id": "98ca7a63-fff4-4adb-a7d2-c779b7b3cdf4",
               "leftValue": "={{ $json.signature_valid }}",
               "rightValue": "true",
               "operator": {
@@ -129,16 +251,16 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        880,
+        1300,
         0
       ],
-      "id": "909b0b54-d97b-42cb-8219-db581664f5b5",
+      "id": "a6ada41c-c1e3-4352-a606-3a290de7cd7e",
       "name": "Signature Valid?"
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { \"ok\": false, \"error\": \"invalid_signature\" } }}",
+        "responseBody": "{ \"ok\": false, \"error\": \"invalid_signature\" }",
         "options": {
           "responseCode": 401
         }
@@ -146,16 +268,16 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        1100,
+        1520,
         -160
       ],
-      "id": "881e0a50-addb-40f6-9e42-c06305fe8552",
+      "id": "3e517d02-2c6c-4138-8e57-8a961d95a51e",
       "name": "Respond 401"
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { \"ok\": true, \"correlation_id\": $json.correlation_id, \"event_type\": $json.event_type } }}",
+        "responseBody": "={\n  \"ok\": true,\n  \"correlation_id\": \"={{ $json.correlation_id }}\",\n  \"event_type\": \"={{ $json.event_type }}\",\n  \"platform\": \"={{ $json.platform }}\"\n}",
         "options": {
           "responseCode": 200
         }
@@ -163,10 +285,10 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        1100,
+        1520,
         0
       ],
-      "id": "99c3750b-5805-4f65-873a-824c61be4fa4",
+      "id": "2b9efdc1-9dd7-4e63-868d-e68260f43968",
       "name": "Respond 200"
     },
     {
@@ -180,7 +302,7 @@
           },
           "conditions": [
             {
-              "id": "13581dac-d48d-4dd4-9b35-8142e0c7ba10",
+              "id": "4eb40ce2-8025-4eec-abb5-e04da8a27ad8",
               "leftValue": "={{ $json.dispatch.inventory }}",
               "rightValue": "true",
               "operator": {
@@ -197,10 +319,10 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1320,
+        1740,
         0
       ],
-      "id": "0c6784db-16b2-457a-ae4d-18cd512ac1cc",
+      "id": "3b757e92-697d-40d5-b089-499c73df96a8",
       "name": "Dispatch Inventory?"
     },
     {
@@ -228,12 +350,12 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.2,
       "position": [
-        1540,
+        1960,
         -80
       ],
-      "id": "b0c8aabf-9080-4759-82aa-24365c053310",
+      "id": "31fd3125-d260-4248-9b24-42b3e6d2026c",
       "name": "Execute Inventory Sync",
-      "notes": "Explicit workflowInputs → Ecom Inventory Sync. Re-select target after import if needed.",
+      "notes": "Map Execute Workflow inputs → Ecom Inventory Sync.",
       "notesInFlow": true
     },
     {
@@ -247,7 +369,7 @@
           },
           "conditions": [
             {
-              "id": "5469dba2-05d7-4a27-93e2-34b6e00e0f06",
+              "id": "111bb50d-e183-4548-ac6e-8ba0bb2919e3",
               "leftValue": "={{ $json.dispatch.order }}",
               "rightValue": "true",
               "operator": {
@@ -264,10 +386,10 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1320,
+        1740,
         160
       ],
-      "id": "d266a110-2083-44bd-88c5-3b68333bdc1b",
+      "id": "8fcd071f-2bd5-4840-ab4b-3ec8a3452ff3",
       "name": "Dispatch Order?"
     },
     {
@@ -282,7 +404,7 @@
           "mappingMode": "defineBelow",
           "value": {
             "store_id": "={{ $json.store_id }}",
-            "order_id": "={{ $json.order_id || $json.entities?.primary_id || '' }}",
+            "order_id": "={{ $json.order_id || $json.entities?.order_id || ($json.event_type === 'order' ? ($json.entities?.primary_id || '') : '') || '' }}",
             "external_order_id": "={{ $json.external_order_id || $json.entities?.external_order_id || '' }}",
             "new_status": "={{ $json.new_status || '' }}",
             "correlation_id": "={{ $json.correlation_id }}"
@@ -295,12 +417,12 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.2,
       "position": [
-        1540,
+        1960,
         160
       ],
-      "id": "5b340ab3-2d57-47bb-8e14-bd3fcb1dda02",
+      "id": "d8e7b49c-fa7b-4cd7-9ebd-e58a6e314c30",
       "name": "Execute Order Tracker",
-      "notes": "Explicit workflowInputs → Ecom Order Tracker. Re-select target after import if needed.",
+      "notes": "Map Execute Workflow inputs → Ecom Order Tracker.",
       "notesInFlow": true
     },
     {
@@ -314,7 +436,7 @@
           },
           "conditions": [
             {
-              "id": "568f7685-e8a0-4838-8663-4d8eae2d4b81",
+              "id": "820c681b-b973-417c-9023-dcd4ea07fd87",
               "leftValue": "={{ $json.dispatch.returns }}",
               "rightValue": "true",
               "operator": {
@@ -331,10 +453,10 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1320,
+        1740,
         320
       ],
-      "id": "d7da1a03-5a22-4ae0-936f-4265e7d2505d",
+      "id": "61362ca4-a716-4a80-8f94-7ce94efad536",
       "name": "Dispatch Returns?"
     },
     {
@@ -351,7 +473,7 @@
             "store_id": "={{ $json.store_id }}",
             "return_id": "={{ $json.return_id || $json.entities?.primary_id || '' }}",
             "external_return_id": "={{ $json.external_return_id || $json.entities?.external_return_id || '' }}",
-            "order_id": "={{ '' }}",
+            "order_id": "={{ $json.order_id || $json.entities?.order_id || '' }}",
             "amount": "={{ Number($json.amount ?? $json.entities?.amount ?? 0) }}",
             "days_since_order": "={{ Number($json.days_since_order ?? 0) }}",
             "reason": "={{ $json.reason || $json.entities?.reason || '' }}",
@@ -365,12 +487,12 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.2,
       "position": [
-        1540,
+        1960,
         320
       ],
-      "id": "d3ae6efa-0e16-41e0-b8c1-44a533e46a85",
+      "id": "61269cf7-dfda-43ae-b6f3-e84d13def701",
       "name": "Execute Returns Automation",
-      "notes": "Explicit workflowInputs → Ecom Returns Automation. Re-select target after import if needed.",
+      "notes": "Map Execute Workflow inputs → Ecom Returns Automation.",
       "notesInFlow": true
     },
     {
@@ -378,10 +500,10 @@
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
       "position": [
-        1540,
+        1960,
         480
       ],
-      "id": "f426be58-cd21-4581-a467-58ef56714a00",
+      "id": "897aa720-615b-448d-ba77-9822a46dd2a1",
       "name": "No Downstream"
     }
   ],
@@ -390,15 +512,66 @@
       "main": [
         [
           {
-            "node": "Prepare Ingest Request",
+            "node": "Prepare Shopify Ingest Request",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Prepare Ingest Request": {
+    "Woo Webhook": {
       "main": [
+        [
+          {
+            "node": "Prepare Woo Ingest Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Shopify Ingest Request": {
+      "main": [
+        [
+          {
+            "node": "Merge Ingest Triggers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Woo Ingest Request": {
+      "main": [
+        [
+          {
+            "node": "Merge Ingest Triggers",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Ingest Triggers": {
+      "main": [
+        [
+          {
+            "node": "Is Woo Ingest?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Woo Ingest?": {
+      "main": [
+        [
+          {
+            "node": "Sidecar Ingest Woo",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Sidecar Ingest Shopify",
@@ -409,6 +582,24 @@
       ]
     },
     "Sidecar Ingest Shopify": {
+      "main": [
+        [
+          {
+            "node": "Normalize Ingest Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Ingest HTTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sidecar Ingest Woo": {
       "main": [
         [
           {

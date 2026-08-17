@@ -18,7 +18,7 @@
         0,
         0
       ],
-      "id": "41464abe-a46f-47b0-9fcf-d304d424a095",
+      "id": "74a571ca-8de2-42de-96ea-87416c817aa5",
       "name": "Customer Insights Cron",
       "notes": "Periodic inventory reconciliation when webhooks are missed.",
       "notesInFlow": true
@@ -34,7 +34,7 @@
         220,
         0
       ],
-      "id": "122d24be-6466-4f30-bbd1-225157342cac",
+      "id": "bdfbd692-75bc-493f-b04e-dc71d40b367b",
       "name": "Insights Seed"
     },
     {
@@ -63,7 +63,7 @@
         440,
         0
       ],
-      "id": "3b81f43e-1c24-44d8-b4ec-32e66c18a31c",
+      "id": "84119e5d-70e7-453a-b338-a5d583cf04aa",
       "name": "Sidecar RFM",
       "retryOnFail": true,
       "maxTries": 3,
@@ -81,7 +81,7 @@
         440,
         160
       ],
-      "id": "704734e3-fc76-4b7c-ae9f-b3620dbe341f",
+      "id": "5ddfd412-4d18-412a-b499-12804a6b40d9",
       "name": "Handle RFM HTTP Error"
     },
     {
@@ -110,7 +110,7 @@
         660,
         0
       ],
-      "id": "71db9337-abf5-4374-bb8a-0d854acc24cf",
+      "id": "d9984799-79b0-48be-9c8e-377918fe0515",
       "name": "Sidecar Churn",
       "retryOnFail": true,
       "maxTries": 3,
@@ -128,7 +128,7 @@
         660,
         160
       ],
-      "id": "39f1ee49-3a0f-470b-9335-aaf48da6f6f2",
+      "id": "8e739ad8-0e0c-4a81-9d7d-ea8fdc70a5f6",
       "name": "Handle Churn HTTP Error"
     },
     {
@@ -139,7 +139,7 @@
         880,
         0
       ],
-      "id": "180a65a5-0ff8-4663-a469-8da4e7faf4a4",
+      "id": "21cadca6-a572-45bd-9df8-d5a4b0e336fe",
       "name": "Insights Done"
     }
   ],

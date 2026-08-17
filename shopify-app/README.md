@@ -63,5 +63,5 @@ When `WEBHOOK_URL` changes (new ngrok host or production domain):
 
 ## Optional later
 
-- Add Admin API calls for production writeback using the app’s offline token
+- Add Admin API calls for production writeback using the app’s offline token (`SHOPIFY_ADMIN_ACCESS_TOKEN` + `SHOPIFY_LOCATION_ID` in ecom `.env`). Inventory/price writeback is implemented in the sidecar (`channels/shopify_admin.py`) when `mode=production` and gates allow.
 - For App Store distribution, add mandatory `compliance_topics` subscriptions

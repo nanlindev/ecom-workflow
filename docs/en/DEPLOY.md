@@ -87,6 +87,9 @@ docker compose -f docker/compose.yml --env-file .env up -d --build
 - `http://ecom_python_ai:8001/health`
 - `http://ecom_python_ai:8001/prompts`
 - (P2) `/competitors/parse`, `/competitors/targets`, `/pricing/recommend`, `/pricing/action`, `/insights/rfm`, `/insights/churn`, `/marketing/copy`, `/marketing/enroll`, `/marketing/advance`
+- (P3) `/ops/summary`, `/ops/keepalive`; Woo ingest via `/ingest/woocommerce`
+
+**P3b live writeback** (optional `.env`): `WOO_*`, `SHOPIFY_ADMIN_ACCESS_TOKEN`, `SHOPIFY_LOCATION_ID`. Gates: Postgres `config_main.mode=production` + `writeback_enabled`. See [TEST_PRODUCTION.md](TEST_PRODUCTION.md).
 
 Host mapping: **8003 → 8001**.
 

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Competitor demo — two snowboards</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --card: #1a222c;
+      --text: #e8eef4;
+      --muted: #9aa8b5;
+      --accent: #5b9fd4;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: linear-gradient(160deg, #0f1419 0%, #1a2836 100%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 2rem 1rem 3rem;
+    }
+    header { max-width: 960px; margin: 0 auto 1.5rem; }
+    header h1 { margin: 0 0 0.35rem; font-size: 1.5rem; font-weight: 650; }
+    header p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+    .grid {
+      max-width: 960px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+    }
+    @media (max-width: 720px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    article.card {
+      background: var(--card);
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.06);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+    }
+    article.card img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 1;
+      object-fit: cover;
+      background: #111;
+    }
+    .body { padding: 1.1rem 1.2rem 1.35rem; }
+    .body h2 { margin: 0 0 0.35rem; font-size: 1.15rem; line-height: 1.3; }
+    .sku { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem; }
+    .price {
+      margin: 0;
+      font-size: 1.65rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.01em;
+    }
+    .case {
+      margin: 0.75rem 0 0;
+      font-size: 0.85rem;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    footer {
+      max-width: 960px;
+      margin: 1.75rem auto 0;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Competitor price board</h1>
+    <p>ecom-workflow crawl demo — two SKUs side by side (not a live storefront).</p>
+  </header>
+
+  <div class="grid">
+    <article class="card" data-competitor-sku="sku-managed-1" data-competitor-price="2499.00">
+      <img
+        src="images/sku-managed-1.jpg"
+        alt="The Multi-managed Snowboard"
+        width="800"
+        height="800"
+      />
+      <div class="body">
+        <h2>The Multi-managed Snowboard</h2>
+        <p class="sku">SKU: sku-managed-1</p>
+        <p class="price">Price: $2499.00</p>
+        <p class="case">Case A — below our Shopify list (~2629): expect a lower recommended price.</p>
+      </div>
+    </article>
+
+    <!-- Case B: competitor above our list → expect hold / no aggressive cut -->
+    <article class="card" data-competitor-sku="SNOWBOARD-LIQUID" data-competitor-price="3899.00">
+      <img
+        src="images/SNOWBOARD-LIQUID.jpg"
+        alt="The Collection Snowboard: Liquid"
+        width="800"
+        height="800"
+      />
+      <div class="body">
+        <h2>The Collection Snowboard: Liquid</h2>
+        <p class="sku">SKU: SNOWBOARD-LIQUID</p>
+        <p class="price">Price: $3899.00</p>
+        <p class="case">Case B — above our Shopify list (~3749): expect hold / no aggressive cut.</p>
+      </div>
+    </article>
+  </div>
+
+  <footer>
+    Machine-readable: each card has <code>data-competitor-sku</code> + <code>data-competitor-price</code>
+    so crawl can bind the correct price when both SKUs share this page.
+  </footer>
+</body>
+</html>

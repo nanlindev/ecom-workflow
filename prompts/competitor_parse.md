@@ -16,5 +16,6 @@ Return ONLY valid JSON:
 }
 
 URL: {url}
+Target SKU (extract THIS product's price only if multiple products appear): {sku}
 Raw content:
 {raw_content}
