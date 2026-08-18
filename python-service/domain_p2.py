@@ -300,6 +300,7 @@ def parse_competitor(
                 user=user,
                 model=prompt.model,
                 fallback=_fallback,
+                operation="competitor_parse",
             )
         except Exception as exc:
             logger.exception("competitor parse LLM/prompt failed")
@@ -543,6 +544,7 @@ def recommend_price(
         user=user,
         model=prompt.model,
         fallback=_fallback,
+        operation="pricing_recommend",
     )
     try:
         rec_price = float(parsed.get("recommended_price"))
@@ -921,6 +923,7 @@ def marketing_copy(
         user=user,
         model=prompt.model,
         fallback=_fallback,
+        operation="marketing_copy",
     )
     return {
         "ok": True,
