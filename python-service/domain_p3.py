@@ -30,75 +30,105 @@ def ops_summary(
     if period_l not in {"daily", "weekly"}:
         return {"ok": False, "error": "period_must_be_daily_or_weekly"}
 
-    if not store_id:
-        key = store_key or _cfg(cfg["flat"], "demo_store_key", "demo-shopify")
+    key = (store_key or "").strip() or _cfg(cfg["flat"], "demo_store_key", "demo-shopify")
+    sid = (store_id or "").strip() or None
+    if sid:
+        with connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id::text AS id FROM stores WHERE id = %s::uuid", (sid,))
+                row = cur.fetchone()
+        if not row:
+            # Stale ECOM_DEMO_STORE_ID (e.g. copied from another env) — fall back to store_key.
+            logger.warning("ops_summary: store_id %s not found; resolving via store_key=%s", sid, key)
+            sid = None
+    if not sid:
         store = ensure_store(store_key=key, platform="shopify")
-        store_id = str(store["id"])
+        sid = str(store["id"])
+    store_id = sid
 
     now = _now()
     window_hours = 24 if period_l == "daily" else 24 * 7
     since = now - timedelta(hours=window_hours)
 
-    with connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT COUNT(*) AS c FROM orders
-                WHERE store_id = %s AND created_at >= %s
-                """,
-                (store_id, since),
-            )
-            orders_count = int(cur.fetchone()["c"])
+    try:
+        with connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM orders
+                    WHERE store_id = %s::uuid AND created_at >= %s
+                    """,
+                    (store_id, since),
+                )
+                orders_count = int(cur.fetchone()["c"])
 
-            cur.execute(
-                """
-                SELECT COUNT(*) AS c FROM returns
-                WHERE store_id = %s AND created_at >= %s
-                """,
-                (store_id, since),
-            )
-            returns_count = int(cur.fetchone()["c"])
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM returns
+                    WHERE store_id = %s::uuid AND created_at >= %s
+                    """,
+                    (store_id, since),
+                )
+                returns_count = int(cur.fetchone()["c"])
 
-            cur.execute(
-                """
-                SELECT COUNT(*) AS c FROM pricing_recommendations
-                WHERE store_id = %s AND created_at >= %s
-                """,
-                (store_id, since),
-            )
-            pricing_count = int(cur.fetchone()["c"])
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM pricing_recommendations
+                    WHERE store_id = %s::uuid AND created_at >= %s
+                    """,
+                    (store_id, since),
+                )
+                pricing_count = int(cur.fetchone()["c"])
 
-            cur.execute(
-                """
-                SELECT COUNT(*) AS c FROM error_logs
-                WHERE created_at >= %s
-                  AND (store_id IS NULL OR store_id = %s)
-                """,
-                (since, store_id),
-            )
-            errors_count = int(cur.fetchone()["c"])
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM error_logs
+                    WHERE created_at >= %s
+                      AND (store_id IS NULL OR store_id = %s::uuid)
+                    """,
+                    (since, store_id),
+                )
+                errors_count = int(cur.fetchone()["c"])
 
-            cur.execute(
-                """
-                SELECT COUNT(*) AS c FROM audit_logs
-                WHERE created_at >= %s
-                  AND action = 'inventory_sync'
-                  AND (store_id IS NULL OR store_id = %s)
-                  AND COALESCE((detail->>'drift_count')::int, 0) > 0
-                """,
-                (since, store_id),
-            )
-            drift_events = int(cur.fetchone()["c"])
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM audit_logs
+                    WHERE created_at >= %s
+                      AND action = 'inventory_sync'
+                      AND (store_id IS NULL OR store_id = %s::uuid)
+                      AND COALESCE(
+                        CASE
+                          WHEN (detail->>'drift_count') ~ '^[0-9]+$'
+                          THEN (detail->>'drift_count')::int
+                          ELSE 0
+                        END,
+                        0
+                      ) > 0
+                    """,
+                    (since, store_id),
+                )
+                drift_events = int(cur.fetchone()["c"])
 
-            cur.execute(
-                """
-                SELECT COUNT(*) AS c FROM campaign_enrollments e
-                JOIN campaigns c ON c.id = e.campaign_id
-                WHERE c.store_id = %s AND e.created_at >= %s
-                """,
-                (store_id, since),
-            )
-            enrollments = int(cur.fetchone()["c"])
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM campaign_enrollments e
+                    JOIN campaigns c ON c.id = e.campaign_id
+                    WHERE c.store_id = %s::uuid AND e.created_at >= %s
+                    """,
+                    (store_id, since),
+                )
+                enrollments = int(cur.fetchone()["c"])
+    except Exception as exc:
+        logger.exception("ops_summary query failed store_id=%s", store_id)
+        return {
+            "ok": False,
+            "error": "ops_summary_query_failed",
+            "error_message": str(exc)[:500],
+            "correlation_id": corr,
+            "store_id": store_id,
+            "period": period_l,
+            "should_alert_slack": False,
+        }
 
     flag_key = "daily_summary_enabled" if period_l == "daily" else "weekly_summary_enabled"
     gate = (
@@ -138,12 +168,16 @@ def ops_summary(
         ),
     }
 
-    write_audit(
-        action=f"{period_l}_summary",
-        store_id=store_id,
-        correlation_id=corr,
-        detail={k: summary[k] for k in ("orders_count", "returns_count", "error_logs", "should_alert_slack")},
-    )
+    try:
+        write_audit(
+            action=f"{period_l}_summary",
+            store_id=store_id,
+            correlation_id=corr,
+            detail={k: summary[k] for k in ("orders_count", "returns_count", "error_logs", "should_alert_slack")},
+        )
+    except Exception:
+        logger.exception("ops_summary audit write failed store_id=%s", store_id)
+
     return summary
 
 

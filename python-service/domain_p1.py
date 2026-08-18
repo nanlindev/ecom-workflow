@@ -270,8 +270,10 @@ def ingest_shopify(
         detail={"topic": topic_l, "entities": {k: v for k, v in entities.items() if k != "raw"}},
     )
 
+    sku_hint = str(entities.get("sku") or "")
     dispatch = {
-        "inventory": event_type in {"inventory", "product"},
+        # inventory_levels/update often has no SKU; unresolved ext-* must not fan out Sync/Slack.
+        "inventory": event_type in {"inventory", "product"} and not sku_hint.startswith("ext-"),
         "order": event_type == "order",
         "returns": event_type == "return",
     }
@@ -853,6 +855,7 @@ def _upsert_shopify_inventory_or_product(
         payload.get("sku")
         or (payload.get("variant") or {}).get("sku")
         or _first_variant_sku(payload)
+        or _sku_from_shopify_inventory_item(store_id, payload.get("inventory_item_id"))
         or f"ext-{payload.get('inventory_item_id') or payload.get('id') or 'unknown'}"
     )
     title = payload.get("title") or payload.get("name") or sku
@@ -926,8 +929,42 @@ def _upsert_shopify_inventory_or_product(
 def _first_variant_sku(payload: dict[str, Any]) -> str | None:
     variants = payload.get("variants") or []
     if variants and isinstance(variants, list):
-        return variants[0].get("sku")
+        sku = variants[0].get("sku")
+        return str(sku) if sku else None
     return None
+
+
+def _sku_from_shopify_inventory_item(store_id: str, inventory_item_id: Any) -> str | None:
+    """Map inventory_levels/update inventory_item_id → SKU via prior product listing raw."""
+    if inventory_item_id is None:
+        return None
+    needle = str(inventory_item_id).strip()
+    if not needle:
+        return None
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT sku FROM listings
+                WHERE store_id = %s AND platform = 'shopify' AND sku IS NOT NULL AND sku <> ''
+                  AND sku NOT LIKE 'ext-%%'
+                  AND (
+                    raw->>'inventory_item_id' = %s
+                    OR raw->'variant'->>'inventory_item_id' = %s
+                    OR EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(COALESCE(raw->'variants', '[]'::jsonb)) AS v
+                      WHERE v->>'inventory_item_id' = %s
+                    )
+                  )
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (store_id, needle, needle, needle),
+            )
+            row = cur.fetchone()
+    sku = (row or {}).get("sku") if row else None
+    return str(sku).strip() if sku else None
 
 
 def _upsert_shopify_order(store_id: str, payload: dict[str, Any], correlation_id: str) -> dict[str, Any]:
@@ -1118,6 +1155,84 @@ def _upsert_shopify_return_stub(store_id: str, payload: dict[str, Any], correlat
     }
 
 
+def _recent_inventory_writeback(
+    store_id: str,
+    *,
+    sku: str,
+    target: int,
+    window_sec: int = 45,
+) -> bool:
+    """True if we already live-applied this SKU→target recently (duplicate Shopify/Woo webhooks)."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT detail FROM audit_logs
+                WHERE store_id = %s AND action = 'inventory_sync'
+                  AND created_at >= NOW() - (%s || ' seconds')::interval
+                ORDER BY created_at DESC
+                LIMIT 12
+                """,
+                (store_id, str(window_sec)),
+            )
+            rows = list(cur.fetchall() or [])
+    for row in rows:
+        detail = row.get("detail") if isinstance(row, dict) else None
+        if not isinstance(detail, dict):
+            continue
+        for wb in detail.get("channel_writebacks") or []:
+            if not isinstance(wb, dict):
+                continue
+            if str(wb.get("sku")) != sku:
+                continue
+            if int(wb.get("target_available") or wb.get("master_available") or -1) != target:
+                continue
+            if wb.get("live_status") == "ok":
+                return True
+    return False
+
+
+def _recent_same_inventory_alert(
+    store_id: str,
+    drifts: list[dict[str, Any]],
+    *,
+    window_sec: int = 45,
+) -> bool:
+    """Suppress Slack if the same SKU/qty drift was already alerted in the window."""
+    sig = tuple(
+        sorted(
+            (str(d.get("sku")), int(d.get("master_available") or 0), d.get("slave_available"))
+            for d in drifts
+        )
+    )
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT detail FROM audit_logs
+                WHERE store_id = %s AND action = 'inventory_sync'
+                  AND created_at >= NOW() - (%s || ' seconds')::interval
+                ORDER BY created_at DESC
+                LIMIT 12
+                """,
+                (store_id, str(window_sec)),
+            )
+            rows = list(cur.fetchall() or [])
+    for row in rows:
+        detail = row.get("detail") if isinstance(row, dict) else None
+        if not isinstance(detail, dict):
+            continue
+        prev = []
+        for wb in detail.get("channel_writebacks") or []:
+            if isinstance(wb, dict) and wb.get("sku"):
+                prev.append(
+                    (str(wb.get("sku")), int(wb.get("master_available") or 0), wb.get("slave_available"))
+                )
+        if tuple(sorted(prev)) == sig:
+            return True
+    return False
+
+
 def inventory_sync(
     *,
     store_id: str | None = None,
@@ -1199,6 +1314,8 @@ def inventory_sync(
     applied_writebacks: list[dict[str, Any]] = []
 
     for sku_key, platforms in by_sku.items():
+        if str(sku_key).startswith("ext-"):
+            continue
         master_row = platforms.get(master)
         if not master_row:
             continue
@@ -1232,6 +1349,14 @@ def inventory_sync(
             # Live channel writeback when credentials present; then align SoT.
             align_sot = _truthy(cfg["flat"].get("writeback_align_sot", "true"))
             for wb in writebacks:
+                if _recent_inventory_writeback(
+                    store_id,
+                    sku=str(wb["sku"]),
+                    target=int(wb["target_available"]),
+                    window_sec=45,
+                ):
+                    channel_writebacks.append({**wb, "live_status": "skipped_duplicate", "sot_aligned": False})
+                    continue
                 live = _apply_live_inventory_writeback(
                     store_id=store_id,
                     channel=wb["slave_channel"],
@@ -1264,22 +1389,25 @@ def inventory_sync(
                     applied_writebacks.append({**wb, **live, "sot_aligned": sot_ok})
 
             live_statuses = [c.get("live_status") for c in channel_writebacks]
-            if any(s == "ok" for s in live_statuses) and all(
-                s in {"ok", "skipped_no_credentials", "sot_only"} for s in live_statuses
-            ):
+            okish = {"ok", "skipped_no_credentials", "sot_only", "skipped_duplicate"}
+            if live_statuses and all(s == "skipped_duplicate" for s in live_statuses):
+                writeback_status = "skipped_duplicate"
+            elif any(s == "ok" for s in live_statuses) and all(s in okish for s in live_statuses):
                 writeback_status = "applied" if any(s == "ok" for s in live_statuses) else "applied_sot_only"
             elif any(s == "ok" for s in live_statuses):
                 writeback_status = "partial"
-            elif all(s in {"skipped_no_credentials", "sot_only"} for s in live_statuses):
+            elif all(s in {"skipped_no_credentials", "sot_only", "skipped_duplicate"} for s in live_statuses):
                 writeback_status = "applied_sot_only"
             else:
                 writeback_status = "failed" if any(s == "error" for s in live_statuses) else "applied_sot_only"
 
     slack_gate = (
         bool(drifts)
+        and writeback_status != "skipped_duplicate"
         and cfg["slack_enabled"]
         and _truthy(cfg["flat"].get("inventory_drift_enabled", "true"))
         and (mode == "production" or cfg["slack_in_test"])
+        and not _recent_same_inventory_alert(store_id, drifts, window_sec=45)
     )
 
     write_audit(

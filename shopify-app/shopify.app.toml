@@ -19,7 +19,7 @@ topics = [
   "orders/updated",
   "refunds/create",
 ]
-uri = "https://shun-speculate-antitrust.ngrok-free.dev/webhook/ecom-shopify"
+uri = "https://n8n.nanlin-portfolio.xyz/webhook/ecom-shopify"
 
 [access_scopes]
 scopes = "write_inventory,read_inventory,read_locations,read_orders,read_products,write_products"
@@ -28,5 +28,5 @@ use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [
-  "https://shun-speculate-antitrust.ngrok-free.dev/shopify/auth/callback",
+  "https://n8n.nanlin-portfolio.xyz/shopify/auth/callback",
 ]

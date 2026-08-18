@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import uuid
@@ -13,6 +14,8 @@ from db import connect
 from domain_p1 import _cfg, _lookup_listing_raw, _truthy, _uuid, get_config, write_audit
 from llm import complete_json
 from prompt_loader import load_prompt
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_commerce_image_url(raw: Any) -> str | None:
@@ -248,6 +251,22 @@ def parse_competitor(
 ) -> dict[str, Any]:
     """LLM (or regex fallback) extract price → insert price_snapshots."""
     corr = correlation_id or _uuid()
+    sid = (store_id or "").strip()
+    if not sid:
+        return {"ok": False, "error": "store_id_required", "correlation_id": corr}
+
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id::text AS id FROM stores WHERE id = %s::uuid", (sid,))
+            if not cur.fetchone():
+                return {
+                    "ok": False,
+                    "error": "store_not_found",
+                    "store_id": sid,
+                    "correlation_id": corr,
+                    "error_message": f"store_id {sid} not in stores — set ECOM_DEMO_STORE_ID to the real Shopify store row",
+                }
+
     truncated = (raw_content or "")[:8000]
     structured = _parse_structured_competitor_price(truncated, sku)
     if structured is not None:
@@ -262,25 +281,39 @@ def parse_competitor(
         fb = False
         price_f = structured
     else:
-        prompt = load_prompt("competitor_parse")
-        user = prompt.render(url=url or "", raw_content=truncated, sku=sku or "")
+        try:
+            prompt = load_prompt("competitor_parse")
+            user = prompt.render(url=url or "", raw_content=truncated, sku=sku or "")
 
-        def _fallback() -> dict[str, Any]:
+            def _fallback() -> dict[str, Any]:
+                price = _parse_price_from_text(truncated, sku=sku)
+                return {
+                    "price": price,
+                    "currency": "USD",
+                    "title": None,
+                    "in_stock": None,
+                    "fallback_used": True,
+                }
+
+            parsed, fb = complete_json(
+                system="Extract competitor product price as JSON only. If multiple products, use only the Target SKU.",
+                user=user,
+                model=prompt.model,
+                fallback=_fallback,
+            )
+        except Exception as exc:
+            logger.exception("competitor parse LLM/prompt failed")
             price = _parse_price_from_text(truncated, sku=sku)
-            return {
+            parsed = {
                 "price": price,
                 "currency": "USD",
                 "title": None,
                 "in_stock": None,
                 "fallback_used": True,
+                "parse_source": "regex_after_error",
+                "error_message": str(exc)[:300],
             }
-
-        parsed, fb = complete_json(
-            system="Extract competitor product price as JSON only. If multiple products, use only the Target SKU.",
-            user=user,
-            model=prompt.model,
-            fallback=_fallback,
-        )
+            fb = True
         price = parsed.get("price")
         try:
             price_f = float(price) if price is not None else None
@@ -293,36 +326,52 @@ def parse_competitor(
             parsed = {**parsed, "price": again, "parse_source": "structured_sku_override"}
             fb = False
 
-    with connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO price_snapshots (
-                    store_id, sku, source_type, source_name, url, price, currency, raw, captured_at
+    try:
+        with connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO price_snapshots (
+                        store_id, sku, source_type, source_name, url, price, currency, raw, captured_at
+                    )
+                    VALUES (%s::uuid, %s, 'competitor', %s, %s, %s, %s, %s::jsonb, NOW())
+                    RETURNING id, captured_at
+                    """,
+                    (
+                        sid,
+                        sku,
+                        source_name or "competitor",
+                        url,
+                        price_f,
+                        parsed.get("currency") or "USD",
+                        json.dumps({"parse": parsed, "correlation_id": corr}, default=str),
+                    ),
                 )
-                VALUES (%s, %s, 'competitor', %s, %s, %s, %s, %s::jsonb, NOW())
-                RETURNING id, captured_at
-                """,
-                (
-                    store_id,
-                    sku,
-                    source_name or "competitor",
-                    url,
-                    price_f,
-                    parsed.get("currency") or "USD",
-                    json.dumps({"parse": parsed, "correlation_id": corr}),
-                ),
-            )
-            row = cur.fetchone()
+                row = cur.fetchone()
+    except Exception as exc:
+        logger.exception("competitor parse insert failed store_id=%s", sid)
+        return {
+            "ok": False,
+            "error": "price_snapshot_insert_failed",
+            "error_message": str(exc)[:500],
+            "store_id": sid,
+            "correlation_id": corr,
+            "sku": sku,
+            "price": price_f,
+        }
 
-    write_audit(
-        action="competitor_parsed",
-        store_id=store_id,
-        correlation_id=corr,
-        entity_type="price_snapshot",
-        entity_id=str(row["id"]) if row else None,
-        detail={"url": url, "price": price_f, "fallback_used": fb or parsed.get("fallback_used"), "sku": sku},
-    )
+    try:
+        write_audit(
+            action="competitor_parsed",
+            store_id=sid,
+            correlation_id=corr,
+            entity_type="price_snapshot",
+            entity_id=str(row["id"]) if row else None,
+            detail={"url": url, "price": price_f, "fallback_used": fb or parsed.get("fallback_used"), "sku": sku},
+        )
+    except Exception:
+        logger.exception("competitor_parsed audit failed")
+
     return {
         "ok": True,
         "correlation_id": corr,
