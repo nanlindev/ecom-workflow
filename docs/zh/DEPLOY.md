@@ -48,8 +48,8 @@ Prompts：http://localhost:8003/prompts
 ```text
 push main/master 或 workflow_dispatch
   → build-and-push python 镜像 → ghcr.io/nanlindev/ecom-workflow/python-ai-service
-  → SSH 部署：ensure-networks → git pull → docker compose up -d
-  → 断言 compose_service ecom_python_ai 为 running
+  → SSH 部署：ensure-networks → git fetch + reset --hard origin/main → pull 镜像 → compose up
+  → force-recreate sidecar → 断言 ecom_python_ai 为 running
 ```
 
 `ecom_postgres` 与 sidecar 同属一份 compose；每次新镜像部署后由 sidecar 启动迁移自动迁库。**n8n 工作流 JSON 不会由 CI 自动导入**（与 CRM 相同，文档化手动导入/同步）。
@@ -98,6 +98,7 @@ docker compose -f docker/compose.yml --env-file .env up -d --build
 | 现象 | 检查 |
 |------|------|
 | Actions：服务未 running | SSH、服务器上 `.env` 是否存在、`docker compose logs ecom_python_ai` |
+| Actions：`git pull` 因本地改动中止 | CI 现为 `git reset --hard origin/main`；不要在服务器改已跟踪文件（密钥放 `.env`） |
 | `/health` → `database: error` | `ecom_postgres` 是否 healthy？`DATABASE_URL` / compose 环境变量？ |
 | 启动 migration 失败 | `docker compose logs ecom_python_ai`；查看 `schema_migrations` |
 | 无 OTEL / Langfuse | Sidecar 是否在 `proxy_network`；OBS 是否起来；Langfuse keys |

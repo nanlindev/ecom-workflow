@@ -48,8 +48,8 @@ Pipeline outline:
 ```text
 push main/master or workflow_dispatch
   → build-and-push python image → ghcr.io/nanlindev/ecom-workflow/python-ai-service
-  → SSH deploy: ensure-networks → git pull → docker compose up -d
-  → assert compose_service ecom_python_ai is running
+  → SSH deploy: ensure-networks → git fetch + reset --hard origin/main → pull image → compose up
+  → force-recreate compose_service → assert ecom_python_ai is running
 ```
 
 `ecom_postgres` starts with the same compose file; schema evolves via sidecar migrations after each new image deploy. **n8n workflow JSON is not auto-imported** (manual import / sync, same as CRM).
@@ -98,6 +98,7 @@ Host mapping: **8003 → 8001**.
 | Symptom | Check |
 |---------|--------|
 | Actions: service not running | SSH, `.env` present on server, `docker compose logs ecom_python_ai` |
+| Actions: `git pull` aborted (local changes) | CI now `git reset --hard origin/main`; do not edit tracked files on the server (keep secrets in `.env`) |
 | `/health` → `database: error` | `ecom_postgres` healthy? `DATABASE_URL` / compose env? |
 | Migration errors on boot | `docker compose logs ecom_python_ai`; inspect `schema_migrations` |
 | OTEL / Langfuse missing | Sidecar on `proxy_network`; OBS stacks up; Langfuse keys |
