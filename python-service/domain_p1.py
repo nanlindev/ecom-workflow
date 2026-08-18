@@ -11,9 +11,11 @@ import hmac
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from db import connect
 
@@ -76,6 +78,27 @@ def ensure_store(
             cur.execute("SELECT * FROM stores WHERE store_key = %s", (store_key,))
             row = cur.fetchone()
             if row:
+                incoming = (external_shop_id or "").strip()
+                current = (row.get("external_shop_id") or "").strip()
+                # Shared Shopify+Woo store: Woo source URL must not stick as Admin handle.
+                if (
+                    incoming
+                    and "myshopify.com" in incoming.lower()
+                    and incoming != current
+                    and "myshopify.com" not in current.lower()
+                ):
+                    cur.execute(
+                        """
+                        UPDATE stores
+                        SET external_shop_id = %s, updated_at = NOW()
+                        WHERE id = %s
+                        RETURNING *
+                        """,
+                        (incoming, row["id"]),
+                    )
+                    updated = cur.fetchone()
+                    if updated:
+                        return dict(updated)
                 return dict(row)
             cur.execute(
                 """
@@ -374,8 +397,10 @@ def ingest_woocommerce(
 
     corr = correlation_id or headers.get("x-correlation-id") or _uuid()
     # Shared store_key with Shopify for multi-channel SoT; channel is on listings/inventory_levels.
+    # Do not persist Woo site URL as external_shop_id (breaks Shopify Admin deep links).
     key = store_key or _cfg(get_config()["flat"], "demo_store_key", "demo-shopify")
-    store = ensure_store(store_key=key, platform="woocommerce", external_shop_id=source or None)
+    shopify_source = source.strip() if source and "myshopify.com" in source.lower() else None
+    store = ensure_store(store_key=key, platform="woocommerce", external_shop_id=shopify_source)
     store_id = str(store["id"])
 
     topic_l = (topic or payload.get("_topic") or "").lower()
@@ -1911,19 +1936,44 @@ def track_order(
             }
 
 
+_SHOPIFY_HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
+
+
 def _shop_handle_from_domain(shop_domain: str | None) -> str:
-    """demo-shopify.myshopify.com → demo-shopify."""
+    """Extract Admin store handle. Ignore Woo/http URLs that are not *.myshopify.com."""
     if not shop_domain:
         return ""
-    d = shop_domain.strip().lower()
-    if d.endswith(".myshopify.com"):
-        return d[: -len(".myshopify.com")]
-    return d.split(".")[0] if d else ""
+    raw = str(shop_domain).strip()
+    if not raw:
+        return ""
+    from_url = "://" in raw or raw.lower().startswith("http")
+    if from_url:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        host = (parsed.hostname or "").lower()
+    else:
+        host = raw.lower().split("/")[0].split("?")[0]
+    if host.endswith(".myshopify.com"):
+        handle = host[: -len(".myshopify.com")]
+        return handle if _SHOPIFY_HANDLE_RE.match(handle) else ""
+    # Bare handle only (nans-automation-store). HTTP(S) Woo URLs never qualify.
+    if not from_url and "." not in host and _SHOPIFY_HANDLE_RE.match(host):
+        return host
+    return ""
 
 
-def shopify_admin_order_url(*, shop_domain: str | None, shopify_order_id: str | None) -> str | None:
+def shopify_admin_order_url(
+    *,
+    shop_domain: str | None,
+    shopify_order_id: str | None,
+    store_key: str | None = None,
+) -> str | None:
     """Build Shopify Admin order URL from shop handle + order id."""
-    handle = _shop_handle_from_domain(shop_domain) or os.getenv("SHOPIFY_STORE_HANDLE", "").strip()
+    handle = (
+        _shop_handle_from_domain(shop_domain)
+        or _shop_handle_from_domain(os.getenv("SHOPIFY_SHOP_DOMAIN"))
+        or _shop_handle_from_domain(os.getenv("SHOPIFY_STORE_HANDLE"))
+        or _shop_handle_from_domain(store_key)
+    )
     oid = str(shopify_order_id or "").strip()
     if not handle:
         return None
@@ -1978,6 +2028,7 @@ def decide_return(
     max_days = int(_cfg(cfg["flat"], "returns_max_days", "30"))
 
     shop_domain: str | None = None
+    store_key_row: str | None = None
     shopify_order_id: str | None = None
 
     with connect() as conn:
@@ -1988,9 +2039,8 @@ def decide_return(
             )
             store_row = cur.fetchone()
             if store_row:
-                shop_domain = store_row.get("external_shop_id") or (
-                    f"{store_row['store_key']}.myshopify.com" if store_row.get("store_key") else None
-                )
+                shop_domain = store_row.get("external_shop_id")
+                store_key_row = store_row.get("store_key")
 
             row = None
             if return_id:
@@ -2093,7 +2143,11 @@ def decide_return(
         and (mode == "production" or cfg["slack_in_test"])
     )
     review_reason = _returns_review_reason(decision, amt, days, max_amount, max_days)
-    admin_url = shopify_admin_order_url(shop_domain=shop_domain, shopify_order_id=shopify_order_id)
+    admin_url = shopify_admin_order_url(
+        shop_domain=shop_domain,
+        shopify_order_id=shopify_order_id,
+        store_key=store_key_row,
+    )
 
     write_audit(
         action="return_decided",
