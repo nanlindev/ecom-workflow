@@ -49,6 +49,7 @@ def main() -> int:
         },
     )
     print({k: woo.get(k) for k in ("ok", "platform", "event_type", "store_id", "dispatch")})
+    # dispatch.inventory is false while Shopify is master; this script calls /inventory/sync next.
     if not woo.get("ok"):
         return 1
 

@@ -270,10 +270,10 @@ def ingest_shopify(
         detail={"topic": topic_l, "entities": {k: v for k, v in entities.items() if k != "raw"}},
     )
 
-    sku_hint = str(entities.get("sku") or "")
     dispatch = {
-        # inventory_levels/update often has no SKU; unresolved ext-* must not fan out Sync/Slack.
-        "inventory": event_type in {"inventory", "product"} and not sku_hint.startswith("ext-"),
+        "inventory": _should_dispatch_inventory(
+            platform="shopify", event_type=event_type, sku=entities.get("sku")
+        ),
         "order": event_type == "order",
         "returns": event_type == "return",
     }
@@ -415,7 +415,10 @@ def ingest_woocommerce(
     )
 
     dispatch = {
-        "inventory": event_type in {"inventory", "product"},
+        # Slave channel ingest updates SoT only; master webhook fans out Inventory Sync.
+        "inventory": _should_dispatch_inventory(
+            platform="woocommerce", event_type=event_type, sku=entities.get("sku")
+        ),
         # Also run Order Tracker when refund arrived via order.updated payload.
         "order": event_type == "order" or order_shaped_return,
         "returns": event_type == "return",
@@ -826,6 +829,40 @@ def _upsert_woo_return_stub(store_id: str, payload: dict[str, Any], correlation_
     }
 
 
+def _is_unresolved_sku(sku: Any) -> bool:
+    """True for empty or synthetic ext-* SKUs invented from SKU-less inventory webhooks."""
+    text = str(sku or "").strip()
+    return (not text) or text.startswith("ext-")
+
+
+def _should_dispatch_inventory(*, platform: str, event_type: str, sku: Any) -> bool:
+    """Only the configured master channel may fan out Inventory Sync."""
+    if event_type not in {"inventory", "product"}:
+        return False
+    if _is_unresolved_sku(sku):
+        return False
+    master = (get_config().get("master_channel") or "shopify").lower()
+    return (platform or "").lower() == master
+
+
+def _shopify_payload_sku(payload: dict[str, Any]) -> str | None:
+    sku = (
+        payload.get("sku")
+        or (payload.get("variant") or {}).get("sku")
+        or _first_variant_sku(payload)
+    )
+    text = str(sku).strip() if sku else ""
+    if not text or text.startswith("ext-"):
+        return None
+    return text
+
+
+def _shopify_inventory_item_id(payload: dict[str, Any]) -> Any:
+    from channels.shopify_admin import extract_shopify_inventory_ids
+
+    return extract_shopify_inventory_ids(payload).get("inventory_item_id")
+
+
 def _classify_shopify_topic(topic: str, payload: dict[str, Any]) -> str:
     if "refund" in topic or "return" in topic:
         return "return"
@@ -851,20 +888,154 @@ def _upsert_shopify_inventory_or_product(
     topic: str,
     correlation_id: str,
 ) -> dict[str, Any]:
-    sku = (
-        payload.get("sku")
-        or (payload.get("variant") or {}).get("sku")
-        or _first_variant_sku(payload)
-        or _sku_from_shopify_inventory_item(store_id, payload.get("inventory_item_id"))
-        or f"ext-{payload.get('inventory_item_id') or payload.get('id') or 'unknown'}"
-    )
-    title = payload.get("title") or payload.get("name") or sku
+    item_id = _shopify_inventory_item_id(payload)
+    sku = _shopify_payload_sku(payload) or _sku_from_shopify_inventory_item(store_id, item_id)
+    if not sku:
+        sku = _sku_from_shopify_admin_inventory_item(item_id)
+
+    if _is_unresolved_sku(sku):
+        write_audit(
+            action="ingest_unresolved_sku",
+            store_id=store_id,
+            correlation_id=correlation_id,
+            entity_type="inventory",
+            detail={
+                "topic": topic,
+                "inventory_item_id": item_id,
+                "payload_keys": list(payload.keys())[:20],
+            },
+        )
+        return {
+            "primary_id": None,
+            "sku": None,
+            "unresolved_sku": True,
+            "inventory_item_id": item_id,
+            "available": payload.get("available"),
+            "correlation_id": correlation_id,
+            "topic": topic,
+        }
+
     available = payload.get("available")
     if available is None and "variants" in payload:
         available = sum(int(v.get("inventory_quantity") or 0) for v in payload.get("variants") or [])
     if available is None:
         available = 0
 
+    inventory_only = "inventory" in (topic or "") and "product" not in (topic or "")
+    if inventory_only:
+        return _upsert_shopify_inventory_level(
+            store_id=store_id,
+            sku=sku,
+            available=int(available),
+            payload=payload,
+            topic=topic,
+            correlation_id=correlation_id,
+            inventory_item_id=item_id,
+        )
+    return _upsert_shopify_product_catalog(
+        store_id=store_id,
+        sku=sku,
+        payload=payload,
+        available=int(available),
+        topic=topic,
+        correlation_id=correlation_id,
+    )
+
+
+def _upsert_shopify_inventory_level(
+    *,
+    store_id: str,
+    sku: str,
+    available: int,
+    payload: dict[str, Any],
+    topic: str,
+    correlation_id: str,
+    inventory_item_id: Any,
+) -> dict[str, Any]:
+    """Update channel qty only. Do not replace products/listings.raw (product webhook owns that)."""
+    title = payload.get("title") or payload.get("name") or sku
+    listing_id = None
+    product_id = None
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO products (store_id, sku, title, raw, updated_at)
+                VALUES (%s, %s, %s, '{}'::jsonb, NOW())
+                ON CONFLICT (store_id, sku) DO NOTHING
+                """,
+                (store_id, sku, title),
+            )
+            cur.execute(
+                "SELECT id FROM products WHERE store_id = %s AND sku = %s",
+                (store_id, sku),
+            )
+            prow = cur.fetchone()
+            product_id = str(prow["id"]) if prow else None
+
+            if inventory_item_id and product_id:
+                cur.execute(
+                    """
+                    INSERT INTO listings (
+                        store_id, platform, external_id, sku, product_id, raw, updated_at
+                    )
+                    VALUES (%s, 'shopify', %s, %s, %s, %s::jsonb, NOW())
+                    ON CONFLICT (store_id, platform, external_id) DO UPDATE SET
+                        sku = EXCLUDED.sku,
+                        product_id = COALESCE(EXCLUDED.product_id, listings.product_id),
+                        updated_at = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        store_id,
+                        str(inventory_item_id),
+                        sku,
+                        product_id,
+                        json.dumps({"inventory_item_id": inventory_item_id, "source": "inventory_levels"}),
+                    ),
+                )
+                row = cur.fetchone()
+                listing_id = str(row["id"]) if row else None
+
+            cur.execute(
+                """
+                INSERT INTO inventory_levels (
+                    store_id, sku, platform, location_key, available, last_synced_at, raw, updated_at
+                )
+                VALUES (%s, %s, 'shopify', 'default', %s, NOW(), %s::jsonb, NOW())
+                ON CONFLICT (store_id, sku, platform, location_key) DO UPDATE SET
+                    available = EXCLUDED.available,
+                    last_synced_at = NOW(),
+                    raw = EXCLUDED.raw,
+                    updated_at = NOW()
+                RETURNING id, available
+                """,
+                (store_id, sku, available, json.dumps(payload)),
+            )
+            inv = cur.fetchone()
+
+    return {
+        "primary_id": str(inv["id"]),
+        "product_id": product_id,
+        "listing_id": listing_id,
+        "sku": sku,
+        "available": int(inv["available"]),
+        "correlation_id": correlation_id,
+        "topic": topic,
+        "inventory_item_id": inventory_item_id,
+    }
+
+
+def _upsert_shopify_product_catalog(
+    *,
+    store_id: str,
+    sku: str,
+    payload: dict[str, Any],
+    available: int,
+    topic: str,
+    correlation_id: str,
+) -> dict[str, Any]:
+    title = payload.get("title") or payload.get("name") or sku
     external_id = str(payload.get("admin_graphql_api_id") or payload.get("id") or sku)
 
     with connect() as conn:
@@ -911,7 +1082,7 @@ def _upsert_shopify_inventory_or_product(
                     updated_at = NOW()
                 RETURNING id, available
                 """,
-                (store_id, sku, int(available), json.dumps(payload)),
+                (store_id, sku, available, json.dumps(payload)),
             )
             inv = cur.fetchone()
 
@@ -949,7 +1120,8 @@ def _sku_from_shopify_inventory_item(store_id: str, inventory_item_id: Any) -> s
                 WHERE store_id = %s AND platform = 'shopify' AND sku IS NOT NULL AND sku <> ''
                   AND sku NOT LIKE 'ext-%%'
                   AND (
-                    raw->>'inventory_item_id' = %s
+                    external_id = %s
+                    OR raw->>'inventory_item_id' = %s
                     OR raw->'variant'->>'inventory_item_id' = %s
                     OR EXISTS (
                       SELECT 1
@@ -960,11 +1132,27 @@ def _sku_from_shopify_inventory_item(store_id: str, inventory_item_id: Any) -> s
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """,
-                (store_id, needle, needle, needle),
+                (store_id, needle, needle, needle, needle),
             )
             row = cur.fetchone()
     sku = (row or {}).get("sku") if row else None
-    return str(sku).strip() if sku else None
+    text = str(sku).strip() if sku else ""
+    return None if _is_unresolved_sku(text) else text
+
+
+def _sku_from_shopify_admin_inventory_item(inventory_item_id: Any) -> str | None:
+    """Fallback when listings.raw has not seen this inventory_item_id yet."""
+    if inventory_item_id is None:
+        return None
+    try:
+        from channels.shopify_admin import ShopifyAdminClient
+
+        sku = ShopifyAdminClient().get_inventory_item_sku(inventory_item_id)
+    except Exception as exc:
+        logger.warning("Admin inventory_item SKU lookup failed: %s", exc)
+        return None
+    text = str(sku).strip() if sku else ""
+    return None if _is_unresolved_sku(text) else text
 
 
 def _upsert_shopify_order(store_id: str, payload: dict[str, Any], correlation_id: str) -> dict[str, Any]:
@@ -1253,6 +1441,29 @@ def inventory_sync(
         store = ensure_store(store_key=key, platform="shopify")
         store_id = str(store["id"])
 
+    if sku and _is_unresolved_sku(sku):
+        write_audit(
+            action="inventory_sync_skipped_unresolved_sku",
+            store_id=store_id,
+            correlation_id=corr,
+            detail={"sku": sku},
+        )
+        return {
+            "ok": True,
+            "correlation_id": corr,
+            "store_id": store_id,
+            "mode": mode,
+            "master_channel": master,
+            "levels": [],
+            "drifts": [],
+            "has_drift": False,
+            "writebacks": [],
+            "writeback_status": "skipped_unresolved_sku",
+            "channel_writebacks": [],
+            "applied_writebacks": [],
+            "should_alert_slack": False,
+        }
+
     # Optional: inject observed slave levels before merge (from Merge node / Cron poll).
     if slave_levels:
         with connect() as conn:
@@ -1314,7 +1525,7 @@ def inventory_sync(
     applied_writebacks: list[dict[str, Any]] = []
 
     for sku_key, platforms in by_sku.items():
-        if str(sku_key).startswith("ext-"):
+        if _is_unresolved_sku(sku_key):
             continue
         master_row = platforms.get(master)
         if not master_row:
@@ -1324,6 +1535,8 @@ def inventory_sync(
             slave = platforms.get(channel)
             slave_qty = int(slave["available"]) if slave else None
             if slave_qty is None or slave_qty != master_qty:
+                if slave_qty is None and not _slave_listing_exists(store_id, channel, sku_key):
+                    continue
                 drift = {
                     "sku": sku_key,
                     "master_channel": master,
@@ -1438,6 +1651,21 @@ def inventory_sync(
         "applied_writebacks": applied_writebacks,
         "should_alert_slack": slack_gate,
     }
+
+
+def _slave_listing_exists(store_id: str, platform: str, sku: str) -> bool:
+    """True when the slave channel has a listing for this SKU (writeback can target it)."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1 FROM listings
+                WHERE store_id = %s AND platform = %s AND sku = %s
+                LIMIT 1
+                """,
+                (store_id, platform, sku),
+            )
+            return cur.fetchone() is not None
 
 
 def _lookup_listing_raw(store_id: str, platform: str, sku: str) -> dict[str, Any]:

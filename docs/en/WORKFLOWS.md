@@ -24,7 +24,7 @@ Thirteen n8n workflows in `workflows/`. Import order: [INSTALL.md](INSTALL.md). 
 
 ```text
 Platform Ingest → /ingest/shopify|woocommerce
-  → Execute Inventory Sync / Order Tracker / Returns
+  → Execute Inventory Sync (master channel + resolved SKU only) / Order Tracker / Returns
 Inventory Sync → POST /inventory/sync → drift Slack + writeback
 ```
 

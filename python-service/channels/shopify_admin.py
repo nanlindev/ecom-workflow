@@ -78,6 +78,31 @@ class ShopifyAdminClient:
             logger.warning("Shopify Admin ping failed: %s", exc)
             return {"ok": False, "reason": str(exc)[:200]}
 
+    def get_inventory_item_sku(self, inventory_item_id: str | int) -> str | None:
+        """Resolve SKU for inventory_levels/update payloads that omit variant.sku."""
+        if not self.configured or inventory_item_id is None:
+            return None
+        item_id = inventory_item_id
+        if isinstance(item_id, str) and item_id.startswith("gid://"):
+            m = re.search(r"/(\d+)$", item_id)
+            item_id = m.group(1) if m else item_id
+        try:
+            with self._client() as client:
+                resp = client.get(f"/inventory_items/{int(item_id)}.json")
+                if resp.status_code >= 400:
+                    logger.warning(
+                        "Shopify inventory_item %s lookup HTTP %s",
+                        item_id,
+                        resp.status_code,
+                    )
+                    return None
+                sku = (resp.json().get("inventory_item") or {}).get("sku")
+                text = str(sku).strip() if sku else ""
+                return text or None
+        except Exception as exc:
+            logger.warning("Shopify get_inventory_item_sku failed: %s", exc)
+            return None
+
     def set_inventory_available(
         self,
         *,

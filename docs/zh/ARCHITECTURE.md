@@ -82,6 +82,8 @@ flowchart TB
 - `master_channel`（默认 `shopify`）为库存权威。
 - `slave_channels`（默认 `woocommerce`）在生产模式下接收漂移回写。
 - 同一 `store_key` 将 Shopify 与 Woo 行映射到同一逻辑店铺。
+- 仅 **master** 渠道 webhook 会 dispatch Inventory Sync。Woo 商品/库存 hook 只更新 SoT，避免回写回声。
+- 无 SKU 的 Shopify `inventory_levels/update` 经 listing / `inventory_item_id`（Admin 兜底）解析；解析失败不落 `ext-*`、不发 Slack。
 
 ## 关联 ID
 

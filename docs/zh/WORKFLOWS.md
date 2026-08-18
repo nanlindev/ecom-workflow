@@ -24,7 +24,7 @@
 
 ```text
 Platform Ingest → /ingest/shopify|woocommerce
-  → Execute Inventory Sync / Order Tracker / Returns
+  → Execute Inventory Sync（仅 master + 已解析 SKU）/ Order Tracker / Returns
 Inventory Sync → POST /inventory/sync → 漂移 Slack + writeback
 ```
 

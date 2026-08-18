@@ -36,6 +36,8 @@ shopify app deploy
 
 在开发商店安装应用。删除 **设置 → 通知 → Webhook** 中重复 topic，避免双投递。
 
+`inventory_levels/update` 常常没有 SKU。sidecar 用 `inventory_item_id` 反查目录 SKU（listing raw，再 Admin `inventory_items`）。反查失败则只 ack、不写 `ext-*`、不 dispatch Inventory Sync；带 SKU 的 `products/update` 仍会同步。
+
 ## HMAC 密钥
 
 App Webhook 使用 **App API secret**（Dev Dashboard → 应用 → Credentials）：

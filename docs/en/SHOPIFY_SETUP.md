@@ -36,6 +36,8 @@ shopify app deploy
 
 Install app on dev store. Delete duplicate topics under **Settings → Notifications → Webhooks** to avoid double delivery.
 
+`inventory_levels/update` payloads often omit SKU. The sidecar maps `inventory_item_id` to the catalog SKU (listing raw, then Admin `inventory_items`). If mapping fails, ingest acks without creating `ext-*` rows and without dispatching Inventory Sync; `products/update` still carries the SKU.
+
 ## HMAC secret
 
 App webhooks sign with **App API secret key** (Dev Dashboard → app → Credentials):

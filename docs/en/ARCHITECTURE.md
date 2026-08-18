@@ -82,6 +82,8 @@ Host port **8003 → 8001**.
 - `config_inventory.master_channel` (default `shopify`) is authoritative.
 - `slave_channels` (default `woocommerce`) receive drift writeback in production.
 - Same `store_key` maps Shopify + Woo rows to one logical store.
+- Inventory Sync is dispatched only from the **master** webhook. Woo product/stock hooks update SoT but do not fan out sync (avoids writeback echo).
+- SKU-less Shopify `inventory_levels/update` is resolved via listing/`inventory_item_id` (Admin fallback). Unresolved events are not persisted as `ext-*` and do not Slack.
 
 ## Correlation
 

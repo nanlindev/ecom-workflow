@@ -41,7 +41,7 @@ WOO_CONSUMER_SECRET=cs_xxx
 - ingest body/头可传 `store_key`
 - 或配置 `config_main.demo_woo_store_key`
 
-`master_channel`（`shopify`）冲突时优先；Woo 通常在 `slave_channels` 中。
+`master_channel`（`shopify`）冲突时优先；Woo 通常在 `slave_channels` 中。商品/库存 webhook 仍写入 Woo `inventory_levels`；Shopify 为 master 时 **不会** dispatch Inventory Sync（避免回写回声）。
 
 ## n8n 检查
 

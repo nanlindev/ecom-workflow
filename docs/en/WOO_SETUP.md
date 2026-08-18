@@ -42,7 +42,7 @@ Use the **same `store_key`** as Shopify (default `demo-shopify` from seeds) so W
 - Ingest body / header may pass `store_key`
 - Or set `config_main.demo_woo_store_key` if Woo uses a different default
 
-Master channel (`shopify`) wins conflicts; Woo is typically a **slave** in `slave_channels`.
+Master channel (`shopify`) wins conflicts; Woo is typically a **slave** in `slave_channels`. Product/stock webhooks still upsert Woo `inventory_levels`; they do **not** dispatch Inventory Sync while Shopify is master (writeback must not echo).
 
 ## n8n checklist
 
