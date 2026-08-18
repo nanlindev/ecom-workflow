@@ -298,7 +298,7 @@ def ingest_shopify(
             platform="shopify", event_type=event_type, sku=entities.get("sku")
         ),
         "order": event_type == "order",
-        "returns": event_type == "return",
+        "returns": event_type == "return" and not entities.get("skip_returns_dispatch"),
     }
     return {
         "ok": True,
@@ -446,7 +446,7 @@ def ingest_woocommerce(
         ),
         # Also run Order Tracker when refund arrived via order.updated payload.
         "order": event_type == "order" or order_shaped_return,
-        "returns": event_type == "return",
+        "returns": event_type == "return" and not entities.get("skip_returns_dispatch"),
     }
     return {
         "ok": True,
@@ -797,7 +797,7 @@ def _upsert_woo_return_stub(store_id: str, payload: dict[str, Any], correlation_
                     linked_order_id = str(found["id"])
 
             cur.execute(
-                "SELECT id FROM returns WHERE store_id = %s AND external_return_id = %s",
+                "SELECT id, decision FROM returns WHERE store_id = %s AND external_return_id = %s",
                 (store_id, external_return_id),
             )
             existing = cur.fetchone()
@@ -809,7 +809,7 @@ def _upsert_woo_return_stub(store_id: str, payload: dict[str, Any], correlation_
                         order_id = COALESCE(%s, order_id),
                         correlation_id = COALESCE(%s, correlation_id), updated_at = NOW()
                     WHERE id = %s
-                    RETURNING id
+                    RETURNING id, decision
                     """,
                     (
                         amount,
@@ -828,7 +828,7 @@ def _upsert_woo_return_stub(store_id: str, payload: dict[str, Any], correlation_
                         status, correlation_id, raw, updated_at
                     )
                     VALUES (%s, %s, %s, 'pending', %s, %s, %s, 'open', %s, %s::jsonb, NOW())
-                    RETURNING id
+                    RETURNING id, decision
                     """,
                     (
                         store_id,
@@ -841,7 +841,9 @@ def _upsert_woo_return_stub(store_id: str, payload: dict[str, Any], correlation_
                         json.dumps(payload),
                     ),
                 )
-            rid = str(cur.fetchone()["id"])
+            saved = cur.fetchone()
+            rid = str(saved["id"])
+            skip_returns_dispatch = _returns_already_decided(saved.get("decision"))
 
     return {
         "primary_id": rid,
@@ -851,6 +853,7 @@ def _upsert_woo_return_stub(store_id: str, payload: dict[str, Any], correlation_
         "reason": reason,
         "correlation_id": correlation_id,
         "source_shape": "order" if order_shaped else "refund_resource",
+        "skip_returns_dispatch": skip_returns_dispatch,
     }
 
 
@@ -858,6 +861,11 @@ def _is_unresolved_sku(sku: Any) -> bool:
     """True for empty or synthetic ext-* SKUs invented from SKU-less inventory webhooks."""
     text = str(sku or "").strip()
     return (not text) or text.startswith("ext-")
+
+
+def _returns_already_decided(decision: Any) -> bool:
+    """True after rules already classified this refund (do not Slack again)."""
+    return str(decision or "").strip().lower() in {"manual_review", "auto_approve", "reject"}
 
 
 def _should_dispatch_inventory(*, platform: str, event_type: str, sku: Any) -> bool:
@@ -1313,7 +1321,7 @@ def _upsert_shopify_return_stub(store_id: str, payload: dict[str, Any], correlat
                     linked_order_id = str(found["id"])
 
             cur.execute(
-                "SELECT id FROM returns WHERE store_id = %s AND external_return_id = %s",
+                "SELECT id, decision FROM returns WHERE store_id = %s AND external_return_id = %s",
                 (store_id, external_return_id),
             )
             existing = cur.fetchone()
@@ -1325,7 +1333,7 @@ def _upsert_shopify_return_stub(store_id: str, payload: dict[str, Any], correlat
                         order_id = COALESCE(%s, order_id),
                         correlation_id = COALESCE(%s, correlation_id), updated_at = NOW()
                     WHERE id = %s
-                    RETURNING id
+                    RETURNING id, decision
                     """,
                     (
                         amount,
@@ -1344,7 +1352,7 @@ def _upsert_shopify_return_stub(store_id: str, payload: dict[str, Any], correlat
                         status, correlation_id, raw, updated_at
                     )
                     VALUES (%s, %s, %s, 'pending', %s, %s, %s, 'open', %s, %s::jsonb, NOW())
-                    RETURNING id
+                    RETURNING id, decision
                     """,
                     (
                         store_id,
@@ -1365,6 +1373,7 @@ def _upsert_shopify_return_stub(store_id: str, payload: dict[str, Any], correlat
         "reason": reason,
         "shopify_order_id": shopify_order_id,
         "correlation_id": correlation_id,
+        "skip_returns_dispatch": _returns_already_decided((row or {}).get("decision")),
     }
 
 
@@ -2030,6 +2039,7 @@ def decide_return(
     shop_domain: str | None = None
     store_key_row: str | None = None
     shopify_order_id: str | None = None
+    previous_decision = "pending"
 
     with connect() as conn:
         with conn.cursor() as cur:
@@ -2056,6 +2066,7 @@ def decide_return(
             amt = float(amount if amount is not None else (row["amount"] if row else 0) or 0)
             days = int(days_since_order if days_since_order is not None else 0)
             why = reason or (row["reason"] if row else None) or ""
+            previous_decision = str((row or {}).get("decision") or "pending")
 
             raw = row["raw"] if row and isinstance(row.get("raw"), dict) else (row["raw"] if row else {}) or {}
             if isinstance(raw, str):
@@ -2138,6 +2149,7 @@ def decide_return(
     needs_review = decision == "manual_review"
     slack_gate = (
         needs_review
+        and not _returns_already_decided(previous_decision)
         and cfg["slack_enabled"]
         and _truthy(cfg["flat"].get("returns_review_enabled", "true"))
         and (mode == "production" or cfg["slack_in_test"])
