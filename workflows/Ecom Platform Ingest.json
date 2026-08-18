@@ -77,22 +77,6 @@
     },
     {
       "parameters": {
-        "mode": "append",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3,
-      "position": [
-        440,
-        0
-      ],
-      "id": "0a285577-289c-4f7c-bd01-763444d253bc",
-      "name": "Merge Ingest Triggers",
-      "notes": "Merge multi-source inventory observations before master conflict resolution.",
-      "notesInFlow": true
-    },
-    {
-      "parameters": {
         "conditions": {
           "options": {
             "caseSensitive": true,
@@ -119,7 +103,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        640,
+        440,
         0
       ],
       "id": "3e3d62d9-9301-4793-b7c7-3075328a081d",
@@ -534,7 +518,7 @@
       "main": [
         [
           {
-            "node": "Merge Ingest Triggers",
+            "node": "Is Woo Ingest?",
             "type": "main",
             "index": 0
           }
@@ -542,17 +526,6 @@
       ]
     },
     "Prepare Woo Ingest Request": {
-      "main": [
-        [
-          {
-            "node": "Merge Ingest Triggers",
-            "type": "main",
-            "index": 1
-          }
-        ]
-      ]
-    },
-    "Merge Ingest Triggers": {
       "main": [
         [
           {
@@ -646,22 +619,16 @@
             "node": "Respond 200",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Dispatch Inventory?",
+            "type": "main",
+            "index": 0
           }
         ],
         [
           {
             "node": "Respond 401",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Respond 200": {
-      "main": [
-        [
-          {
-            "node": "Dispatch Inventory?",
             "type": "main",
             "index": 0
           }

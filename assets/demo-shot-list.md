@@ -5,6 +5,8 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 
 对准 VO：[demo-video-script.md](demo-video-script.md)
 
+**本轮只录 gig：Fiverr ≤75s + Upwork ≤90s。YouTube / 日报 / Jaeger / Insights / Marketing / Keepalive 全部跳过**（深入做完 ecom 再拍 Y）。
+
 | 项 | 值 |
 |----|-----|
 | Shopify | `nans-automation-store`（master） |
@@ -40,7 +42,7 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 |------|--------|------------|---|---|---|
 | Shopify 下单 → PG | Ingest → **Order Tracker** | Create order（带邮箱、Mark paid） | **活拍** | **活拍** | **活拍** |
 | 正常单无 Slack | Order Tracker | execution `ok`，频道无 anomaly | **活拍** | **活拍** | **活拍** |
-| 退款规则 → 人工审核 | **Returns Automation** | 同单 Refund **>$50** | **活拍** Slack | **活拍** | **活拍** |
+| 退款规则 → 老板可见 | **Returns Automation** | 同单 Refund **>$50** | **活拍** Slack | **活拍** | **活拍** |
 | 订单异常告警 | Order Tracker Slack | 预演不要故意造（无邮箱才告警） | 不入镜 | 不入镜 | 口播「anomaly 另有卡」 |
 | 库存 master/slave | **Inventory Sync** | 只改 Shopify `SNOWBOARD-LIQUID` | 时间不够可砍 | **活拍** | **活拍** |
 | P3b 库存 live 回写 Woo | Inventory Sync | Slack `applied` + Woo 数量对齐 | 可 8s 闪 | **活拍** | **活拍** |
@@ -86,7 +88,7 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 - 本地 n8n **全停**；Woo webhook 只留线上。
 - 下单必须带 **顾客邮箱**（paid 无邮箱会走 anomaly，不是主线）。
 - 正常 paid **不发 Slack**；镜头 = Shopify 订单 + n8n Order Tracker 绿。
-- 退款 **>$50** 才有 `↩️ Return needs manual review`。
+- 退款 **>$50** 才有 `↩️ Large refund processed`（店员已退，老板可点进订单）。
 - 下单/退款可能带一张库存卡，记下即可，不算失败。
 - 库存只改 `SNOWBOARD-LIQUID`；期望 **一张**真 SKU、`applied`，不要 `ext-*`。
 - 定价预演默认 **Reject**。密钥不入镜。
@@ -114,7 +116,7 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 2. n8n：Ingest `dispatch.order` → **Order Tracker** `ok` / `paid`  
 3. 频道 **没有** `⚠️ Order anomaly`  
 4. 同单 **Refund** 整单（>$50）  
-5. Slack `↩️ Return needs manual review` · `manual_review`  
+5. Slack `↩️ Large refund processed` · `manual_review`  
 6. n8n **Returns Automation** 同一 `correlation_id`  
 
 失败则停：没 dispatch order；`order_not_found`；退 ≤$50 却在等 Slack。
@@ -151,13 +153,14 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 
 ---
 
-## 6. 三路成片取舍（同一条预演剪三刀）
+## 6. 本轮成片（gig only）
 
-| 成片 | 入镜顺序 | 必须看到的结果 | 剪掉 |
-|------|----------|----------------|------|
-| **F 75s** | 下单 → Tracker → Refund → Returns Slack → CTA | 真单 + 人工审核卡 | 库存/定价/日报/OBS |
-| **U 90s** | F + 改库存 → 一张漂移卡 → Woo 对齐 + Pricing 卡 Reject | F + 回写闭环 | 日报、Insights、邮件 |
-| **Y 2–3min** | U + Daily + Jaeger/Langfuse + 画布闪：Crawl / Insights / Marketing / Keepalive / Weekly / Error Handler + 13 条列表 | 13 条能力都露脸 | `.env`、失败 execution |
+同一条预演剪两刀。Y 以后再拍。
+
+| 成片 | 入镜顺序 | 必须看到 | 不要拍 |
+|------|----------|----------|--------|
+| **F 75s** | Hook 订单 → Tracker 绿 → Refund → Returns Slack → CTA | 真单 + `Large refund processed` 卡 | 库存、定价、架构、OBS |
+| **U 90s** | F + 改库存 → 一张 `applied` 卡 → Woo 对齐 + Pricing 卡 **Reject** + 3s 架构 | F + 回写闭环 + 人审定价 | 日报、Insights、邮件、Jaeger |
 
 ---
 

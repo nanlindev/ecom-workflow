@@ -30,9 +30,9 @@ Annotate shots: **F** = Fiverr ≤75s · **U** = Upwork ≤90s · **Y** = YouTub
 
 | Beat | Visual | VO |
 |------|--------|-----|
-| 0:22 | Shopify **Refund** on that order (amount > $50) | "Refunds over the auto-approve cap need a human." |
-| 0:30 | Slack: `Return needs manual review` | "Rules engine: amount and age — not a silent refund." |
-| 0:38 | n8n **Returns Automation** + same `correlation_id` | "One id from webhook to Slack. Ops can open Shopify Admin from the card." |
+| 0:22 | Shopify **Refund** on that order (amount > $50) | "Staff refunds in Admin. Over the threshold, Slack flags it for the owner." |
+| 0:30 | Slack: `Large refund processed` | "Not a silent refund — click the card to open the same order." |
+| 0:38 | n8n **Returns Automation** + same `correlation_id` | "One id from webhook to Slack. The owner does not have to live in Admin." |
 
 **F:** This loop is the money shot. Skip inventory if over time.
 
@@ -91,13 +91,13 @@ Annotate shots: **F** = Fiverr ≤75s · **U** = Upwork ≤90s · **Y** = YouTub
 
 | Cut | Max duration | Must-include shots |
 |-----|--------------|-------------------|
-| **Fiverr (F)** | 75s | Paid order in n8n + refund Slack `manual_review` |
+| **Fiverr (F)** | 75s | Paid order in n8n + Slack `Large refund processed` |
 | **Upwork (U)** | 90s | F shots + inventory writeback before/after |
 | **YouTube (Y)** | 2–3 min | Order/return + inventory + pricing + ops + Jaeger |
 
 ## Recording notes
 
-- Primary live path: Shopify paid order → Order Tracker → refund >$50 → Slack review. Shot list: [demo-shot-list.md](demo-shot-list.md).
+- Primary live path: Shopify paid order → Order Tracker → refund >$50 → Slack `Large refund processed`. Shot list: [demo-shot-list.md](demo-shot-list.md).
 - Secondary: Shopify qty → one real-SKU Slack card → Woo matches.
 - Local n8n off. Blur secrets. Same `correlation_id` on the return card + n8n + Jaeger.
 

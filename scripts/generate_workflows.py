@@ -731,7 +731,7 @@ const res = $input.item.json || {};
 const body = res.body && typeof res.body === 'object' ? res.body : res;
 const adminUrl = body.shopify_admin_url || '';
 const lines = [
-  '↩️ Return needs manual review',
+  '↩️ Large refund processed',
   `Return: ${body.external_return_id || body.return_id}`,
   `Shopify order: ${body.shopify_order_id || 'n/a'}`,
   `Amount: ${body.amount}`,
@@ -739,7 +739,7 @@ const lines = [
   `Days since order: ${body.days_since_order}`,
   `Why flagged: ${body.review_reason || 'n/a'}`,
   `Decision: ${body.decision}`,
-  `Action: Open in Shopify (no Slack approve — process refund/return in Admin)`,
+  `Action: Review in Shopify (staff already refunded — owner can open the order)`,
   adminUrl ? `Shopify Admin: ${adminUrl}` : 'Shopify Admin: (set store external_shop_id / SHOPIFY_STORE_HANDLE)',
   `Correlation: ${body.correlation_id || prep.correlation_id}`,
 ];
@@ -881,8 +881,7 @@ def build_platform_ingest() -> None:
             [220, 120],
             notes="HMAC prep (Woo; ping acked in sidecar).",
         ),
-        merge_node("Merge Ingest Triggers", [440, 0], mode="append"),
-        if_bool_node("Is Woo Ingest?", [640, 0], "={{ $json.is_woo }}"),
+        if_bool_node("Is Woo Ingest?", [440, 0], "={{ $json.is_woo }}"),
         http_json_post(
             "Sidecar Ingest Shopify",
             [860, -120],
@@ -923,9 +922,9 @@ def build_platform_ingest() -> None:
     conn: dict = {}
     connect(conn, "Shopify Webhook", "Prepare Shopify Ingest Request")
     connect(conn, "Woo Webhook", "Prepare Woo Ingest Request")
-    connect(conn, "Prepare Shopify Ingest Request", "Merge Ingest Triggers", dst_input=0)
-    connect(conn, "Prepare Woo Ingest Request", "Merge Ingest Triggers", dst_input=1)
-    connect(conn, "Merge Ingest Triggers", "Is Woo Ingest?")
+    # Two webhook triggers never fire in the same execution — do not Merge (waits forever / delays 200).
+    connect(conn, "Prepare Shopify Ingest Request", "Is Woo Ingest?")
+    connect(conn, "Prepare Woo Ingest Request", "Is Woo Ingest?")
     connect(conn, "Is Woo Ingest?", "Sidecar Ingest Woo", src_output=0)
     connect(conn, "Is Woo Ingest?", "Sidecar Ingest Shopify", src_output=1)
     connect_error(conn, "Sidecar Ingest Shopify", "Handle Ingest HTTP Error")
@@ -936,7 +935,8 @@ def build_platform_ingest() -> None:
     connect(conn, "Normalize Ingest Result", "Signature Valid?")
     connect(conn, "Signature Valid?", "Respond 200", src_output=0)
     connect(conn, "Signature Valid?", "Respond 401", src_output=1)
-    connect(conn, "Respond 200", "Dispatch Inventory?")
+    # Ack Shopify/Woo before Inventory Sync (Woo REST can exceed Shopify's ~5s webhook timeout).
+    connect(conn, "Signature Valid?", "Dispatch Inventory?", src_output=0)
     connect(conn, "Dispatch Inventory?", "Execute Inventory Sync", src_output=0)
     connect(conn, "Dispatch Inventory?", "Dispatch Order?", src_output=1)
     connect(conn, "Execute Inventory Sync", "Dispatch Order?")

@@ -1998,8 +1998,8 @@ def _extract_shopify_order_id(raw: Any) -> str | None:
 def _returns_review_reason(decision: str, amt: float, days: int, max_amount: float, max_days: int) -> str:
     if decision == "manual_review":
         if amt > max_amount:
-            return f"amount {amt} exceeds auto-approve max {max_amount}"
-        return "requires merchant review"
+            return f"amount {amt} exceeds owner-review threshold {max_amount}"
+        return "flagged for owner review"
     if decision == "reject":
         if amt <= 0:
             return "non-positive amount"
@@ -2181,7 +2181,7 @@ def decide_return(
         "shop_domain": shop_domain,
         "shopify_order_id": shopify_order_id,
         "shopify_admin_url": admin_url,
-        "merchant_action": "open_in_shopify",
+        "merchant_action": "review_in_shopify",
         "needs_manual_review": needs_review,
         "should_alert_slack": slack_gate,
         # test: PG only; production: pending_provider (no Slack approve/reject)
