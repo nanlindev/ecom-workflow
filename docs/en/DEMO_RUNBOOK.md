@@ -4,6 +4,8 @@ Portfolio demo script for ecom-workflow P0–P3. Start with `mode=test`; use iso
 
 Related: [SHOWCASE.md](../SHOWCASE.md) · [TEST_PRODUCTION.md](TEST_PRODUCTION.md) · [INSTALL.md](INSTALL.md) · [RUN_EXAMPLE.md](RUN_EXAMPLE.md)
 
+Live rehearsal shot list: [assets/demo-shot-list.md](../../assets/demo-shot-list.md)
+
 **Chinese:** [zh/DEMO_RUNBOOK.md](../zh/DEMO_RUNBOOK.md)
 
 ---

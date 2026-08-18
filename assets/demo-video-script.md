@@ -1,6 +1,6 @@
 # Demo video script — one spine, three cuts
 
-**Story spine:** Multi-channel inventory drift → Postgres SoT → **live writeback** (Woo or Shopify Admin) proves production gates. Secondary wow: **pricing Slack Approve** + Langfuse trace.
+**Story spine:** Shopify **order paid** → n8n Order Tracker → **refund > auto-approve** → Slack manual review. Secondary trust: inventory drift live writeback. Wow: pricing Approve + Langfuse.
 
 Annotate shots: **F** = Fiverr ≤75s · **U** = Upwork ≤90s · **Y** = YouTube 2–3 min
 
@@ -10,8 +10,8 @@ Annotate shots: **F** = Fiverr ≤75s · **U** = Upwork ≤90s · **Y** = YouTub
 
 | Beat | Visual | VO (English) |
 |------|--------|--------------|
-| 0:00 | Split screen: Shopify stock 42 vs Woo 37 | "Two storefronts, one SKU — who's right?" |
-| 0:05 | n8n **Ecom Platform Ingest** canvas | "This n8n stack ingests, reconciles, and writes back — safely gated." |
+| 0:00 | Shopify Admin: paid order on `SNOWBOARD-LIQUID` | "Order paid. Who tracks it — and who refunds it?" |
+| 0:05 | n8n **Ecom Order Tracker** execution | "This n8n stack ingests the order into Postgres — then the return rules fire." |
 
 ---
 
@@ -26,27 +26,27 @@ Annotate shots: **F** = Fiverr ≤75s · **U** = Upwork ≤90s · **Y** = YouTub
 
 ---
 
-## 0:22–0:45 — Scenario A: drift detect (F · U · Y)
+## 0:22–0:45 — Scenario A: order + return (F · U · Y — primary trust)
 
 | Beat | Visual | VO |
 |------|--------|-----|
-| 0:22 | Terminal: `seed_demo_scenario_a.py` | "Seed injects real drift on demo SKU sku-managed-1." |
-| 0:30 | Slack drift card | "Inventory Sync flags drift — writeback skipped in test mode." |
-| 0:38 | Postgres `inventory_levels` query | "Postgres holds the merged truth before any live API call." |
+| 0:22 | Shopify **Refund** on that order (amount > $50) | "Refunds over the auto-approve cap need a human." |
+| 0:30 | Slack: `Return needs manual review` | "Rules engine: amount and age — not a silent refund." |
+| 0:38 | n8n **Returns Automation** + same `correlation_id` | "One id from webhook to Slack. Ops can open Shopify Admin from the card." |
 
-**F:** End VO at 0:40 with "test mode protects prod stores."
+**F:** This loop is the money shot. Skip inventory if over time.
 
 ---
 
-## 0:45–1:05 — P3b live writeback (F · U · Y — primary trust)
+## 0:45–1:05 — Inventory live writeback (U · Y; F: optional 8s)
 
 | Beat | Visual | VO |
 |------|--------|-----|
-| 0:45 | `.env` blur: `WOO_*` or `SHOPIFY_ADMIN_ACCESS_TOKEN` | "Flip production mode with channel credentials configured." |
-| 0:52 | Re-run sync / Woo admin stock before→after | "Writeback_status: applied — slave channel matches master." |
-| 1:00 | `writeback_status` in execution output | "SoT aligned in PG even when a channel API is missing — applied_sot_only." |
+| 0:45 | Shopify: change `SNOWBOARD-LIQUID` qty | "Same ingest path keeps inventory honest across channels." |
+| 0:52 | Slack one drift card, `Writeback: applied` | "Master Shopify, slave Woo — production writeback." |
+| 1:00 | Woo Admin stock matches | "One SKU, one number." |
 
-**F:** Compress to 0:45–0:58 (13s); this is the **money shot**.
+**F:** Optional 8s Woo before/after only.
 
 ---
 
@@ -79,9 +79,11 @@ Annotate shots: **F** = Fiverr ≤75s · **U** = Upwork ≤90s · **Y** = YouTub
 | 1:45 | 13-workflow list in n8n | "Thirteen workflows, generator-driven JSON, MIT template." |
 | 1:52 | README / SHOWCASE link | "Clone, import, seed — link in description." |
 
-**F CTA (0:58–1:15):** Drift → live writeback → "DM for install + your stack."
+**F CTA (0:58–1:15):** Paid order → refund Slack review → "DM for install + your stack."
 
-**U CTA (1:25–1:30):** Add pricing approve flash + "Message me for scoped rollout."
+**U CTA (1:25–1:30):** Add inventory writeback flash + pricing Reject + "Message me for scoped rollout."
+
+**Y extra (after 1:25):** Daily Slack + Jaeger on the return `correlation_id` + 3–8s flashes: Crawl, Insights, Marketing (gated), Keepalive, Weekly, Error Handler — every workflow appears once. Operator matrix: [demo-shot-list.md](demo-shot-list.md).
 
 ---
 
@@ -89,14 +91,14 @@ Annotate shots: **F** = Fiverr ≤75s · **U** = Upwork ≤90s · **Y** = YouTub
 
 | Cut | Max duration | Must-include shots |
 |-----|--------------|-------------------|
-| **Fiverr (F)** | 75s | Drift Slack + live writeback before/after + test→prod gate mention |
-| **Upwork (U)** | 90s | F shots + pricing Approve + 5s architecture |
-| **YouTube (Y)** | 2–3 min | Full A + P3b + B + ops + Jaeger/Langfuse |
+| **Fiverr (F)** | 75s | Paid order in n8n + refund Slack `manual_review` |
+| **Upwork (U)** | 90s | F shots + inventory writeback before/after |
+| **YouTube (Y)** | 2–3 min | Order/return + inventory + pricing + ops + Jaeger |
 
 ## Recording notes
 
-- Use demo store only; blur secrets in `.env`.
-- Same `correlation_id` visible in Slack + Jaeger for one continuous narrative.
-- Seed scripts: `seed_demo_scenario_a.py`, `seed_demo_scenario_b.py`, `seed_demo_scenario_p3.py`.
+- Primary live path: Shopify paid order → Order Tracker → refund >$50 → Slack review. Shot list: [demo-shot-list.md](demo-shot-list.md).
+- Secondary: Shopify qty → one real-SKU Slack card → Woo matches.
+- Local n8n off. Blur secrets. Same `correlation_id` on the return card + n8n + Jaeger.
 
 Runbook: [docs/en/DEMO_RUNBOOK.md](../docs/en/DEMO_RUNBOOK.md)

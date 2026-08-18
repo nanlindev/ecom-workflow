@@ -4,6 +4,8 @@ ecom-workflow P0–P3 作品集演示脚本。先用 `mode=test`；live writebac
 
 相关：[SHOWCASE.md](../SHOWCASE.md) · [TEST_PRODUCTION.md](TEST_PRODUCTION.md) · [INSTALL.md](INSTALL.md) · [RUN_EXAMPLE.md](RUN_EXAMPLE.md)
 
+线上预演分镜（录屏前走位）：[assets/demo-shot-list.md](../../assets/demo-shot-list.md)
+
 ---
 
 ## 0. 预检
@@ -18,7 +20,7 @@ ecom-workflow P0–P3 作品集演示脚本。先用 `mode=test`；live writebac
 
 ## 场景 A — 库存 + 订单（P1，必做）
 
-**信任路径：** 平台接入 → 漂移检测 → PG SoT。
+**信任路径：** 下单 → Order Tracker；退款超阈值 → Returns 人工审核 Slack。库存漂移回写为第二段。
 
 ```bash
 python3 scripts/seed_demo_scenario_a.py
