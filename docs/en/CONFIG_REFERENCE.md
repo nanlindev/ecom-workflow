@@ -56,7 +56,7 @@ UPDATE config_inventory SET value = 'shopify,woocommerce' WHERE key = 'slave_cha
 | `email_provider` | `resend` | Label for ops; n8n Marketing Orchestrator sends via Resend HTTP |
 | `daily_summary_enabled` | `true` | Daily Summary Slack when `mode=production` |
 | `weekly_summary_enabled` | `true` | Weekly Summary Slack when `mode=production` |
-| `keepalive_alert_enabled` | `true` | Slack when Health Keepalive fails in production |
+| `keepalive_alert_enabled` | `true` | Slack when Health Keepalive fails in production (same channel set is not re-alerted within 1h) |
 | `inventory_drift_enabled` | `true` | Drift alerts |
 | `pricing_alert_enabled` | `true` | Pricing recommendation Slack |
 

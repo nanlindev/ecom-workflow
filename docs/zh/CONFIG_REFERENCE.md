@@ -56,7 +56,7 @@ UPDATE config_inventory SET value = 'shopify,woocommerce' WHERE key = 'slave_cha
 | `email_provider` | `resend` | 运维标签；n8n Marketing Orchestrator 实际用 Resend HTTP |
 | `daily_summary_enabled` | `true` | `mode=production` 时 Daily Slack |
 | `weekly_summary_enabled` | `true` | `mode=production` 时 Weekly Slack |
-| `keepalive_alert_enabled` | `true` | Keepalive 失败时 Slack |
+| `keepalive_alert_enabled` | `true` | Keepalive 失败时 Slack（同一渠道失败 1h 内不重复告警） |
 | `inventory_drift_enabled` | `true` | 漂移告警 |
 | `pricing_alert_enabled` | `true` | 定价建议 Slack |
 

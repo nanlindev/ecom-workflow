@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img" aria-label="ecom-workflow architecture">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1c1712"/>
+      <stop offset="55%" stop-color="#14110e"/>
+      <stop offset="100%" stop-color="#0e1a1c"/>
+    </linearGradient>
+    <linearGradient id="wash" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#d08a3a" stop-opacity="0.14"/>
+      <stop offset="45%" stop-color="#d08a3a" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#2a8f86" stop-opacity="0.12"/>
+    </linearGradient>
+    <pattern id="grain" width="6" height="6" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.6" fill="#fff" opacity="0.035"/>
+      <circle cx="4" cy="3" r="0.5" fill="#000" opacity="0.05"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 1.2 L 9 5 L 0 8.8" fill="none" stroke="#c9b8a4" stroke-width="1.6"/>
+    </marker>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+  <rect width="1920" height="1080" fill="url(#wash)"/>
+  <rect width="1920" height="1080" fill="url(#grain)"/>
+  <path d="M0 96 H1920" stroke="#d08a3a" stroke-width="3" opacity="0.85"/>
+  <path d="M0 984 H1920" stroke="#2a8f86" stroke-width="2" opacity="0.45"/>
+
+  <text x="80" y="64" fill="#f3e6d4" font-family="Georgia, Times New Roman, serif" font-size="42" font-weight="700" letter-spacing="4">ecom-workflow</text>
+  <text x="1840" y="58" text-anchor="end" fill="#c9b8a4" font-family="Arial, Helvetica, sans-serif" font-size="22" letter-spacing="2">SHOPIFY MASTER  /  WOO SLAVE  /  POSTGRES SOT</text>
+
+  <g>
+    <rect x="80" y="180" width="360" height="280" rx="6" fill="#241c16" stroke="#d08a3a" stroke-width="2.5"/>
+    <text x="260" y="240" text-anchor="middle" fill="#d08a3a" font-family="Arial, Helvetica, sans-serif" font-size="18" letter-spacing="3">STOREFRONT</text>
+    <text x="260" y="310" text-anchor="middle" fill="#f3e6d4" font-family="Georgia, Times New Roman, serif" font-size="44">Shopify</text>
+    <text x="260" y="360" text-anchor="middle" fill="#c9b8a4" font-family="Arial, Helvetica, sans-serif" font-size="22">master / webhooks + Admin</text>
+    <text x="260" y="410" text-anchor="middle" fill="#8f9a8c" font-family="Arial, Helvetica, sans-serif" font-size="20">orders, stock, price</text>
+  </g>
+  <g>
+    <rect x="80" y="500" width="360" height="280" rx="6" fill="#241c16" stroke="#2a8f86" stroke-width="2.5"/>
+    <text x="260" y="560" text-anchor="middle" fill="#5ec4bb" font-family="Arial, Helvetica, sans-serif" font-size="18" letter-spacing="3">STOREFRONT</text>
+    <text x="260" y="630" text-anchor="middle" fill="#f3e6d4" font-family="Georgia, Times New Roman, serif" font-size="44">Woo</text>
+    <text x="260" y="680" text-anchor="middle" fill="#c9b8a4" font-family="Arial, Helvetica, sans-serif" font-size="22">slave / webhooks + REST</text>
+    <text x="260" y="730" text-anchor="middle" fill="#8f9a8c" font-family="Arial, Helvetica, sans-serif" font-size="20">aligned inventory + price</text>
+  </g>
+
+  <g>
+    <rect x="560" y="180" width="800" height="600" rx="8" fill="#1a221f" stroke="#f3e6d4" stroke-width="1.5"/>
+    <text x="960" y="240" text-anchor="middle" fill="#8f9a8c" font-family="Arial, Helvetica, sans-serif" font-size="18" letter-spacing="4">PLATFORM</text>
+
+    <rect x="620" y="280" width="680" height="160" rx="6" fill="#2a221a" stroke="#d08a3a" stroke-width="2"/>
+    <text x="960" y="345" text-anchor="middle" fill="#f3e6d4" font-family="Georgia, Times New Roman, serif" font-size="48">n8n</text>
+    <text x="960" y="400" text-anchor="middle" fill="#c9b8a4" font-family="Arial, Helvetica, sans-serif" font-size="24">13 workflows / shared runtime</text>
+
+    <rect x="620" y="480" width="320" height="230" rx="6" fill="#152422" stroke="#2a8f86" stroke-width="2"/>
+    <text x="780" y="555" text-anchor="middle" fill="#f3e6d4" font-family="Georgia, Times New Roman, serif" font-size="34">FastAPI</text>
+    <text x="780" y="605" text-anchor="middle" fill="#c9b8a4" font-family="Arial, Helvetica, sans-serif" font-size="20">sidecar / rules + LLM</text>
+    <text x="780" y="650" text-anchor="middle" fill="#8f9a8c" font-family="Arial, Helvetica, sans-serif" font-size="18">ingest, sync, pricing</text>
+
+    <rect x="980" y="480" width="320" height="230" rx="6" fill="#152422" stroke="#2a8f86" stroke-width="2"/>
+    <text x="1140" y="555" text-anchor="middle" fill="#f3e6d4" font-family="Georgia, Times New Roman, serif" font-size="34">Postgres</text>
+    <text x="1140" y="605" text-anchor="middle" fill="#c9b8a4" font-family="Arial, Helvetica, sans-serif" font-size="20">system of record</text>
+    <text x="1140" y="650" text-anchor="middle" fill="#8f9a8c" font-family="Arial, Helvetica, sans-serif" font-size="18">SKU, orders, config</text>
+  </g>
+
+  <g>
+    <rect x="1480" y="180" width="360" height="180" rx="6" fill="#241c16" stroke="#d08a3a" stroke-width="2"/>
+    <text x="1660" y="250" text-anchor="middle" fill="#f3e6d4" font-family="Georgia, Times New Roman, serif" font-size="36">Slack</text>
+    <text x="1660" y="305" text-anchor="middle" fill="#c9b8a4" font-family="Arial, Helvetica, sans-serif" font-size="20">refund, drift, Approve</text>
+  </g>
+  <g>
+    <rect x="1480" y="390" width="360" height="180" rx="6" fill="#241c16" stroke="#2a8f86" stroke-width="2"/>
+    <text x="1660" y="460" text-anchor="middle" fill="#f3e6d4" font-family="Georgia, Times New Roman, serif" font-size="34">Writeback</text>
+    <text x="1660" y="515" text-anchor="middle" fill="#c9b8a4" font-family="Arial, Helvetica, sans-serif" font-size="20">live stock + price</text>
+  </g>
+  <g>
+    <rect x="1480" y="600" width="360" height="180" rx="6" fill="#241c16" stroke="#8f9a8c" stroke-width="2"/>
+    <text x="1660" y="665" text-anchor="middle" fill="#f3e6d4" font-family="Georgia, Times New Roman, serif" font-size="30">Jaeger / Langfuse</text>
+    <text x="1660" y="720" text-anchor="middle" fill="#c9b8a4" font-family="Arial, Helvetica, sans-serif" font-size="20">trace + LLM generations</text>
+  </g>
+
+  <line x1="440" y1="320" x2="548" y2="360" stroke="#c9b8a4" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="440" y1="640" x2="548" y2="560" stroke="#c9b8a4" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="1360" y1="360" x2="1472" y2="270" stroke="#c9b8a4" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="1360" y1="480" x2="1472" y2="480" stroke="#c9b8a4" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="1360" y1="600" x2="1472" y2="690" stroke="#c9b8a4" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="780" y1="440" x2="780" y2="472" stroke="#c9b8a4" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <line x1="1140" y1="440" x2="1140" y2="472" stroke="#c9b8a4" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <line x1="940" y1="595" x2="972" y2="595" stroke="#5ec4bb" stroke-width="2.2" marker-end="url(#arrow)"/>
+
+  <text x="80" y="1038" fill="#c9b8a4" font-family="Arial, Helvetica, sans-serif" font-size="26">Ingest  -  SoT  -  gated writeback</text>
+  <text x="1840" y="1038" text-anchor="end" fill="#d08a3a" font-family="Arial, Helvetica, sans-serif" font-size="26" letter-spacing="1">correlation_id on every run</text>
+</svg>

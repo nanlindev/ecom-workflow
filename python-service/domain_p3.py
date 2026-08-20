@@ -181,6 +181,51 @@ def ops_summary(
     return summary
 
 
+def _channel_fail_reason(channel_pings: dict[str, Any], channel_failures: list[str]) -> str:
+    parts: list[str] = []
+    for name in channel_failures:
+        result = channel_pings.get(name) or {}
+        reason = result.get("reason") or result.get("error") or result.get("body") or ""
+        status = result.get("status_code")
+        bit = f"{name}"
+        if status:
+            bit += f" HTTP {status}"
+        if reason:
+            bit += f" {reason}"
+        parts.append(bit.strip())
+    return "; ".join(parts)[:300]
+
+
+def _recent_keepalive_alert(channel_failures: list[str], *, window_sec: int = 3600) -> bool:
+    """True if the same channel_failures already failed keepalive in the window (Slack debounce)."""
+    sig = tuple(sorted(channel_failures))
+    if not sig:
+        return False
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT detail FROM audit_logs
+                WHERE action = 'keepalive_check'
+                  AND created_at >= NOW() - (%s || ' seconds')::interval
+                ORDER BY created_at DESC
+                LIMIT 8
+                """,
+                (str(window_sec),),
+            )
+            rows = list(cur.fetchall() or [])
+    for row in rows:
+        detail = row.get("detail") if isinstance(row, dict) else None
+        if not isinstance(detail, dict):
+            continue
+        if detail.get("ok") is True:
+            continue
+        prev = tuple(sorted(str(x) for x in (detail.get("channel_failures") or [])))
+        if prev == sig:
+            return True
+    return False
+
+
 def keepalive_check(*, correlation_id: str | None = None, ping_channels: bool = True) -> dict[str, Any]:
     """Sidecar + PG health; optional light Woo/Shopify Admin pings when configured."""
     cfg = get_config()
@@ -223,11 +268,21 @@ def keepalive_check(*, correlation_id: str | None = None, ping_channels: bool = 
     if channel_failures:
         healthy = False
 
+    fail_reason = _channel_fail_reason(channel_pings, channel_failures)
+    fail_lines = [
+        "🚨 Ecom Health Keepalive FAILED",
+        f"Database: {'ok' if db_ok else 'error'}",
+        f"Channel failures: {', '.join(channel_failures) or 'none'}",
+    ]
+    if fail_reason:
+        fail_lines.append(f"Detail: {fail_reason}")
+    fail_lines.append(f"Correlation: {corr}")
     alert = (
         (not healthy)
         and cfg["mode"] == "production"
         and cfg["slack_enabled"]
         and _truthy(cfg["flat"].get("keepalive_alert_enabled", "true"))
+        and not _recent_keepalive_alert(channel_failures, window_sec=3600)
     )
 
     body = {
@@ -240,14 +295,7 @@ def keepalive_check(*, correlation_id: str | None = None, ping_channels: bool = 
         "channel_failures": channel_failures,
         "should_alert_slack": alert,
         "slack_text": (
-            "\n".join(
-                [
-                    "🚨 Ecom Health Keepalive FAILED",
-                    f"Database: {'ok' if db_ok else 'error'}",
-                    f"Channel failures: {', '.join(channel_failures) or 'none'}",
-                    f"Correlation: {corr}",
-                ]
-            )
+            "\n".join(fail_lines)
             if not healthy
             else f"✅ Ecom Health Keepalive OK (db={'ok' if db_ok else 'error'}) corr={corr}"
         ),

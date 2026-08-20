@@ -63,6 +63,7 @@ class ShopifyAdminClient:
                 "User-Agent": "ecom-workflow-sidecar/1.0",
             },
             timeout=self.timeout,
+            trust_env=False,
         )
 
     def ping(self) -> dict[str, Any]:

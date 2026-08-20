@@ -39,21 +39,25 @@ class WooCommerceClient:
     def configured(self) -> bool:
         return bool(self.base_url and self.consumer_key and self.consumer_secret)
 
+    def _auth_params(self) -> dict[str, str]:
+        # Query-string keys survive proxies that strip the Authorization header.
+        return {"consumer_key": self.consumer_key, "consumer_secret": self.consumer_secret}
+
     def _client(self) -> httpx.Client:
         return httpx.Client(
             base_url=f"{self.base_url}/wp-json/wc/v3",
-            auth=(self.consumer_key, self.consumer_secret),
             timeout=self.timeout,
+            trust_env=False,
             headers={"User-Agent": "ecom-workflow-sidecar/1.0"},
         )
 
     def ping(self) -> dict[str, Any]:
-        """Light API reachability check (system status or products?per_page=1)."""
+        """Light reachability: Woo REST index (not a product listing)."""
         if not self.configured:
             return {"ok": False, "reason": "not_configured"}
         try:
             with self._client() as client:
-                resp = client.get("/products", params={"per_page": 1})
+                resp = client.get("/", params=self._auth_params(), timeout=10.0)
                 if resp.status_code < 400:
                     return {"ok": True, "status_code": resp.status_code}
                 return {"ok": False, "status_code": resp.status_code, "body": resp.text[:200]}
@@ -65,7 +69,7 @@ class WooCommerceClient:
         if not self.configured or not sku:
             return None
         with self._client() as client:
-            resp = client.get("/products", params={"sku": sku})
+            resp = client.get("/products", params={**self._auth_params(), "sku": sku})
             resp.raise_for_status()
             rows = resp.json()
             if isinstance(rows, list) and rows:
@@ -91,6 +95,7 @@ class WooCommerceClient:
             with self._client() as client:
                 resp = client.put(
                     f"/products/{pid}",
+                    params=self._auth_params(),
                     json={"manage_stock": True, "stock_quantity": int(available)},
                 )
                 if resp.status_code >= 400:
@@ -119,6 +124,7 @@ class WooCommerceClient:
         with self._client() as client:
             resp = client.put(
                 f"/products/{parent_id}/variations/{variation_id}",
+                params=self._auth_params(),
                 json={"manage_stock": True, "stock_quantity": int(available)},
             )
             if resp.status_code >= 400:
@@ -166,7 +172,7 @@ class WooCommerceClient:
                 pid = product.get("id")
             else:
                 with self._client() as client:
-                    resp = client.get(f"/products/{pid}")
+                    resp = client.get(f"/products/{pid}", params=self._auth_params())
                     if resp.status_code < 400:
                         product = resp.json()
 
@@ -180,6 +186,7 @@ class WooCommerceClient:
                 with self._client() as client:
                     resp = client.put(
                         f"/products/{int(product['parent_id'])}/variations/{int(pid)}",
+                        params=self._auth_params(),
                         json=payload,
                     )
                     if resp.status_code >= 400:
@@ -200,7 +207,7 @@ class WooCommerceClient:
                     }
 
             with self._client() as client:
-                resp = client.put(f"/products/{pid}", json=payload)
+                resp = client.put(f"/products/{pid}", params=self._auth_params(), json=payload)
                 if resp.status_code >= 400:
                     return {
                         "ok": False,

@@ -54,7 +54,7 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 |------|--------|------------|---|---|---|
 | 竞品抓取 + LLM parse | **Competitor Price Crawl** | Execute Workflow 或已有 snapshot | 不入镜 | 闪画布 | **闪** execution |
 | 定价建议 | **Pricing Engine** | Execute → Slack Approve/Reject | 可选 3s 按钮 | **活拍卡** | **活拍卡** |
-| Slack 人审（不自动改价） | **Slack Actions** | 预演 **Reject**（Approve 会改店面价） | 不点 | **Reject** | **Reject**（录 U 可另拍 Approve 再改回） |
+| Slack 人审后回写价 | **Slack Actions** | 预演 **Approve** → Shopify/Woo 新价 | 不点 | **Approve** | **Approve** |
 | Langfuse 定价 trace | sidecar | tag `ecom-workflow` | 不入镜 | 闪 | **闪** |
 | RFM / 流失 | **Customer Insights** | Execute，看 sidecar/PG | 不入镜 | 不入镜 | **闪** execution 成功 |
 | 弃购序列 + Resend | **Marketing Orchestrator** | Execute；production 才真发信 | 不入镜 | 不入镜 | **闪** + 口播门控（不要真发客户邮件） |
@@ -91,7 +91,7 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 - 退款 **>$50** 才有 `↩️ Large refund processed`（店员已退，老板可点进订单）。
 - 下单/退款可能带一张库存卡，记下即可，不算失败。
 - 库存只改 `SNOWBOARD-LIQUID`；期望 **一张**真 SKU、`applied`，不要 `ext-*`。
-- 定价预演默认 **Reject**。密钥不入镜。
+- 定价拍 **Approve** 回写；点之前记下 Shopify/Woo 原价，拍完改回方便再录。密钥不入镜。
 
 ---
 
@@ -132,8 +132,8 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 ### C. P2 定价 wow（U/Y 入镜；F 可跳）
 
 10. 执行 **Pricing Engine**（可选先跑 **Competitor Crawl**）  
-11. Slack Approve/Reject 卡 → **Reject**  
-12. Y：Langfuse 打开这次 generation  
+11. Slack Approve/Reject 卡 → **Approve**  
+12. 刷新 Shopify + Woo 价格已变；Y：Langfuse 打开这次 generation  
 
 ### D. P2/P3 其余（仅 Y 闪，预演仍要点一次）
 
@@ -149,7 +149,7 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 
 - 演示单保持 refunded  
 - 库存两边一致  
-- 误 Approve 则改回价格  
+- Approve 后把价格改回记下的原价  
 
 ---
 
@@ -160,7 +160,7 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 | 成片 | 入镜顺序 | 必须看到 | 不要拍 |
 |------|----------|----------|--------|
 | **F 75s** | Hook 订单 → Tracker 绿 → Refund → Returns Slack → CTA | 真单 + `Large refund processed` 卡 | 库存、定价、架构、OBS |
-| **U 90s** | F + 改库存 → 一张 `applied` 卡 → Woo 对齐 + Pricing 卡 **Reject** + 3s 架构 | F + 回写闭环 + 人审定价 | 日报、Insights、邮件、Jaeger |
+| **U 90s** | F + 改库存 → 一张 `applied` 卡 → Woo 对齐 + Pricing **Approve** + 两边新价 | F + 库存/价格回写 | 日报、Insights、邮件、Jaeger |
 
 ---
 
@@ -174,7 +174,7 @@ Fiverr 75s / Upwork 90s 不可能全活拍；该展示的必须在 **YouTube 2�
 | 退货 Slack | 有 / 无 |
 | Returns correlation | |
 | 库存卡（一张真 SKU / applied） | |
-| Pricing 卡 + Reject | |
+| Pricing 卡 + Approve + 店面新价 | |
 | Daily Slack | |
 | Insights / Marketing / Keepalive | 闪过 / 失败 |
 | Jaeger 能搜到退货 id | |

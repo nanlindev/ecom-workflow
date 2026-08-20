@@ -55,7 +55,7 @@ Annotate shots: **F** = Fiverr ≤75s · **U** = Upwork ≤90s · **Y** = YouTub
 | Beat | Visual | VO |
 |------|--------|-----|
 | 1:05 | **Ecom Pricing Engine** Slack Approve button | "Competitor crawl feeds pricing recommendations." |
-| 1:12 | Click Approve → updated Slack message | "Human-in-the-loop before price hits the storefront." |
+| 1:12 | Click **Approve** → Slack updated → Shopify/Woo price | "Approve writes the new price to Shopify and Woo." |
 | 1:18 | Langfuse `pricing_recommend` generation | "Prompt version pinned in Langfuse — tag ecom-workflow." |
 
 **F:** Skip entirely or 1:20–1:25 quick flash of Approve button only.
@@ -81,7 +81,7 @@ Annotate shots: **F** = Fiverr ≤75s · **U** = Upwork ≤90s · **Y** = YouTub
 
 **F CTA (0:58–1:15):** Paid order → refund Slack review → "DM for install + your stack."
 
-**U CTA (1:25–1:30):** Add inventory writeback flash + pricing Reject + "Message me for scoped rollout."
+**U CTA (1:25–1:30):** Add inventory writeback + pricing Approve + both storefronts → "Message me for scoped rollout."
 
 **Y extra (after 1:25):** Daily Slack + Jaeger on the return `correlation_id` + 3–8s flashes: Crawl, Insights, Marketing (gated), Keepalive, Weekly, Error Handler — every workflow appears once. Operator matrix: [demo-shot-list.md](demo-shot-list.md).
 
